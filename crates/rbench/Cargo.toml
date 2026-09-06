@@ -1,0 +1,22 @@
+[package]
+name = "rbench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Explicit, reproducible Rust benchmarks and scenario observations"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[package.metadata.rbench]
+targets = ["workloads"]
+
+[[bench]]
+name = "workloads"
+harness = false

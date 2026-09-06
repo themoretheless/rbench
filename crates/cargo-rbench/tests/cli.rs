@@ -1,0 +1,486 @@
+static RUNNER_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+use std::{fs, path::Path, process::Command};
+fn cli(args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_cargo-rbench"))
+        .args(args)
+        .output()
+        .unwrap()
+}
+#[test]
+fn help_and_cargo_invocation() {
+    assert!(cli(&["--help"]).status.success());
+    assert!(cli(&["rbench", "doctor"]).status.success());
+}
+#[cfg(unix)]
+#[test]
+fn process_success_failure_timeout_and_immutable_output() {
+    let _guard = RUNNER_TEST.lock().unwrap();
+    let t = tempfile::tempdir().unwrap();
+    let p = t.path().join("ok");
+    let p = p.to_str().unwrap();
+    let o = cli(&[
+        "run",
+        "--program",
+        "/bin/echo",
+        "--repetitions",
+        "2",
+        "--output",
+        p,
+        "--",
+        "hello world",
+    ]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let r = rbench::Run::load(p).unwrap();
+    assert_eq!(r.observations.len(), 2);
+    assert!(
+        fs::read_to_string(Path::new(p).join("logs/0-candidate.stdout"))
+            .unwrap()
+            .contains("hello world")
+    );
+    assert!(!cli(&["run", "--program", "/bin/echo", "--output", p])
+        .status
+        .success());
+    let bad = t.path().join("bad");
+    assert!(!cli(&[
+        "run",
+        "--program",
+        "/usr/bin/false",
+        "--output",
+        bad.to_str().unwrap()
+    ])
+    .status
+    .success());
+    assert_eq!(
+        rbench::Run::load(&bad).unwrap().status,
+        rbench::Status::Failed
+    );
+    let timeout = t.path().join("timeout");
+    assert!(!cli(&[
+        "run",
+        "--program",
+        "/bin/sleep",
+        "--timeout-ms",
+        "20",
+        "--output",
+        timeout.to_str().unwrap(),
+        "--",
+        "2"
+    ])
+    .status
+    .success());
+    assert!(fs::read_to_string(timeout.join("run.json"))
+        .unwrap()
+        .contains("timed out"));
+}
+#[cfg(unix)]
+#[test]
+fn malformed_protocol_is_not_success() {
+    let _guard = RUNNER_TEST.lock().unwrap();
+    let t = tempfile::tempdir().unwrap();
+    let out = t.path().join("bad");
+    let o = cli(&[
+        "run",
+        "--program",
+        "/bin/echo",
+        "--protocol",
+        "--output",
+        out.to_str().unwrap(),
+        "--",
+        "RBENCH_RESULT={}",
+    ]);
+    assert!(!o.status.success());
+    assert_eq!(
+        rbench::Run::load(out).unwrap().status,
+        rbench::Status::Failed
+    );
+}
+#[test]
+fn unknown_plan_fields_fail() {
+    let t = tempfile::tempdir().unwrap();
+    let p = t.path().join("plan.json");
+    fs::write(&p, r#"{"candidate":{"path":"/bin/echo"},"repititions":1}"#).unwrap();
+    let o = cli(&[
+        "run",
+        "--plan",
+        p.to_str().unwrap(),
+        "--output",
+        t.path().join("out").to_str().unwrap(),
+    ]);
+    assert!(!o.status.success());
+    assert!(!t.path().join("out").exists());
+}
+fn forma_fixture(path: &Path) {
+    fs::create_dir(path).unwrap();
+    fs::write(path.join("metadata.json"),r#"{"platform":"darwin","osRelease":"25","arch":"arm64","cpu":"fixture","rust":"fixture","logicalCpus":10,"systemRamBytes":1024,"repeats":1,"frames":120}"#).unwrap();
+    for s in ["image", "text", "nested"] {
+        fs::write(path.join(format!("{s}.ui")), s).unwrap();
+        fs::write(path.join(format!("{s}.template.ui")), s).unwrap();
+    }
+    let specs = [
+        ("image", "gpu", "animation", 800, 400),
+        ("image", "gpu", "animation", 1920, 1080),
+        ("image", "gpu", "animation", 3840, 2160),
+        ("image", "gpu", "resize", 3840, 2160),
+        ("text", "gpu", "animation", 1920, 1080),
+        ("nested", "gpu", "forced", 1920, 1080),
+        ("image", "gpu", "forced", 3840, 2160),
+        ("image", "gpu", "idle", 800, 400),
+        ("image", "cpu", "animation", 800, 400),
+        ("image", "cpu", "animation", 3840, 2160),
+        ("image", "cpu", "resize", 3840, 2160),
+    ];
+    let rows:Vec<_>=specs.into_iter().map(|(s,b,m,w,h)|serde_json::json!({"scene":s,"backend":b,"mode":m,"width":w,"height":h,"scale":2,"repetition":1,"frames":if m=="idle"{0}else{120},"adapter":"fixture","render_throughput_fps":100,"completed_ms":{"p95":4.25},"gpu_pass":null})).collect();
+    fs::write(
+        path.join("results.json"),
+        serde_json::to_vec(&rows).unwrap(),
+    )
+    .unwrap();
+}
+#[test]
+fn forma_import_preserves_scope_and_rejects_missing_rows() {
+    let t = tempfile::tempdir().unwrap();
+    let src = t.path().join("forma");
+    forma_fixture(&src);
+    let out = t.path().join("import");
+    let o = cli(&[
+        "import-forma",
+        src.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let run = rbench::Run::load(out).unwrap();
+    assert_eq!(run.cases.len(), 11);
+    assert!(run.cases.iter().all(|c| c
+        .metrics
+        .iter()
+        .any(|m| m.id == "gpu.pass.mean" && m.phase == "gpu_diagnostic")));
+    assert!(run
+        .observations
+        .iter()
+        .filter(|o| o.metric == "gpu.pass.mean")
+        .all(|o| o.value.is_none()));
+    let p = src.join("results.json");
+    let mut rows: Vec<serde_json::Value> = serde_json::from_slice(&fs::read(&p).unwrap()).unwrap();
+    rows.pop();
+    fs::write(p, serde_json::to_vec(&rows).unwrap()).unwrap();
+    assert!(!cli(&[
+        "import-forma",
+        src.to_str().unwrap(),
+        "-o",
+        t.path().join("bad").to_str().unwrap()
+    ])
+    .status
+    .success());
+}
+
+#[test]
+fn init_discovery_preserves_manifest_and_refuses_overwrite() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = dir.path().join("Cargo.toml");
+    fs::create_dir(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/lib.rs"), "").unwrap();
+    fs::write(&manifest,"# keep this comment\n[package]\nname='init-fixture'\nversion='0.1.0'\nedition='2021'\n[workspace]\n").unwrap();
+    let o = cli(&["init", "--manifest-path", manifest.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let content = fs::read_to_string(&manifest).unwrap();
+    assert!(content.contains("# keep this comment"));
+    assert!(content.contains("harness = false"));
+    let o = cli(&[
+        "discover",
+        "--manifest-path",
+        manifest.to_str().unwrap(),
+        "--offline",
+        "--json",
+    ]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v[0]["registered"], true);
+    assert!(
+        !cli(&["init", "--manifest-path", manifest.to_str().unwrap()])
+            .status
+            .success()
+    );
+    assert_eq!(content, fs::read_to_string(&manifest).unwrap());
+}
+#[test]
+fn baseline_alias_checks_integrity_and_gate_exit_codes() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = dir.path().join("run");
+    let store = dir.path().join("store");
+    let mut recorder = rbench::Recorder::new();
+    recorder
+        .case(rbench::Case {
+            id: "fixture".into(),
+            contract: Default::default(),
+            metrics: vec![rbench::Metric::duration("wall", "test", "total")],
+        })
+        .unwrap();
+    recorder.observe("fixture", "wall", 42).unwrap();
+    recorder.finish().unwrap().save_new(&run).unwrap();
+    let args = [
+        "--store",
+        store.to_str().unwrap(),
+        "baseline",
+        "save",
+        "main",
+        run.to_str().unwrap(),
+    ];
+    assert!(cli(&args).status.success());
+    assert!(!cli(&args).status.success());
+    assert!(
+        cli(&["--store", store.to_str().unwrap(), "report", "@main"])
+            .status
+            .success()
+    );
+    let config = dir.path().join("budget.json");
+    fs::write(
+        &config,
+        r#"{"budgets":[{"case":"fixture","metric":"wall","unit":"ns","max":41}]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        cli(&[
+            "--store",
+            store.to_str().unwrap(),
+            "gate",
+            "@main",
+            "--config",
+            config.to_str().unwrap()
+        ])
+        .status
+        .code(),
+        Some(1)
+    );
+    let path = run.join("run.json");
+    let mut content = fs::read_to_string(&path).unwrap();
+    content.push('\n');
+    fs::write(path, content).unwrap();
+    assert!(
+        !cli(&["--store", store.to_str().unwrap(), "report", "@main"])
+            .status
+            .success()
+    );
+    assert!(
+        !cli(&["--store", store.to_str().unwrap(), "report", "@../run"])
+            .status
+            .success()
+    );
+}
+
+fn simple_run(path: &Path) -> rbench::Run {
+    let mut rec = rbench::Recorder::new();
+    rec.case(rbench::Case {
+        id: "=unsafe,case".into(),
+        contract: Default::default(),
+        metrics: vec![rbench::Metric::duration("wall", "test", "total")],
+    })
+    .unwrap();
+    rec.observe("=unsafe,case", "wall", 42).unwrap();
+    let run = rec.finish().unwrap();
+    run.save_new(path).unwrap();
+    run
+}
+#[test]
+fn history_last_notes_export_and_bundle_roundtrip() {
+    let t = tempfile::tempdir().unwrap();
+    let run = t.path().join("a");
+    simple_run(&run);
+    let store = t.path().to_str().unwrap();
+    assert!(cli(&["--store", store, "report", "last"]).status.success());
+    let original = fs::read(run.join("run.json")).unwrap();
+    assert!(cli(&["--store", store, "note", "last", "portable note"])
+        .status
+        .success());
+    assert_eq!(original, fs::read(run.join("run.json")).unwrap());
+    let report = cli(&["--store", store, "report", "last"]);
+    assert!(String::from_utf8(report.stdout)
+        .unwrap()
+        .contains("portable note"));
+    let csv = t.path().join("out.csv");
+    assert!(cli(&[
+        "--store",
+        store,
+        "export",
+        "last",
+        "--format",
+        "csv",
+        "-o",
+        csv.to_str().unwrap()
+    ])
+    .status
+    .success());
+    assert!(fs::read_to_string(csv)
+        .unwrap()
+        .contains("\"'=unsafe,case\""));
+    let jsonl = t.path().join("out.jsonl");
+    assert!(cli(&[
+        "--store",
+        store,
+        "export",
+        "last",
+        "--format",
+        "jsonl",
+        "-o",
+        jsonl.to_str().unwrap()
+    ])
+    .status
+    .success());
+    let value: serde_json::Value =
+        serde_json::from_str(fs::read_to_string(jsonl).unwrap().trim()).unwrap();
+    assert_eq!(value["observation"]["value"], "42");
+    let bundle = t.path().join("run.bundle.json");
+    assert!(cli(&[
+        "--store",
+        store,
+        "bundle",
+        "last",
+        "-o",
+        bundle.to_str().unwrap()
+    ])
+    .status
+    .success());
+    let restored = t.path().join("restored");
+    assert!(cli(&[
+        "unpack",
+        bundle.to_str().unwrap(),
+        "-o",
+        restored.to_str().unwrap()
+    ])
+    .status
+    .success());
+    assert_eq!(original, fs::read(restored.join("run.json")).unwrap());
+    let other = t.path().join("empty-store");
+    let o = cli(&[
+        "--store",
+        other.to_str().unwrap(),
+        "notes",
+        restored.to_str().unwrap(),
+    ]);
+    assert!(o.status.success());
+    assert!(String::from_utf8(o.stdout)
+        .unwrap()
+        .contains("portable note"));
+    let h = cli(&["--store", store, "history", "--json"]);
+    let h: serde_json::Value = serde_json::from_slice(&h.stdout).unwrap();
+    assert_eq!(h.as_array().unwrap().len(), 2);
+}
+#[test]
+fn bundle_rejects_tampering_before_creating_output() {
+    let t = tempfile::tempdir().unwrap();
+    let run = t.path().join("run");
+    simple_run(&run);
+    let bundle = t.path().join("bundle.json");
+    assert!(cli(&[
+        "bundle",
+        run.to_str().unwrap(),
+        "-o",
+        bundle.to_str().unwrap()
+    ])
+    .status
+    .success());
+    let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&bundle).unwrap()).unwrap();
+    v["files"][0]["name"] = "../escaped".into();
+    fs::write(&bundle, serde_json::to_vec(&v).unwrap()).unwrap();
+    let out = t.path().join("out");
+    assert!(!cli(&[
+        "unpack",
+        bundle.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap()
+    ])
+    .status
+    .success());
+    assert!(!out.exists());
+}
+#[cfg(unix)]
+#[test]
+fn dry_run_and_preflight_never_execute_or_create_output() {
+    let t = tempfile::tempdir().unwrap();
+    let output = t.path().join("new");
+    let o = cli(&[
+        "run",
+        "--program",
+        "/usr/bin/false",
+        "--dry-run",
+        "-o",
+        output.to_str().unwrap(),
+    ]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!output.exists());
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert!(v["hashes"].as_object().unwrap().len() == 1);
+    let missing = cli(&[
+        "run",
+        "--program",
+        "/not/a/real/binary",
+        "--dry-run",
+        "-o",
+        output.to_str().unwrap(),
+    ]);
+    assert!(!missing.status.success());
+    assert!(!output.exists());
+}
+#[test]
+fn uncertainty_policy_does_not_allow_missing_capabilities() {
+    let t = tempfile::tempdir().unwrap();
+    let run = t.path().join("run");
+    let mut r = simple_run(&run);
+    for o in &mut r.observations {
+        o.value = None;
+        o.availability = rbench::Availability::Unsupported("missing".into());
+    }
+    let bad = t.path().join("bad");
+    r.save_new(&bad).unwrap();
+    let o = cli(&[
+        "compare",
+        run.to_str().unwrap(),
+        bad.to_str().unwrap(),
+        "--check",
+        "--uncertainty",
+        "record",
+    ]);
+    assert_eq!(o.status.code(), Some(2));
+    let o = cli(&[
+        "compare",
+        run.to_str().unwrap(),
+        run.to_str().unwrap(),
+        "--check",
+        "--uncertainty",
+        "warn",
+    ]);
+    assert!(o.status.success());
+    assert!(String::from_utf8(o.stderr)
+        .unwrap()
+        .contains("inconclusive"));
+}
+#[test]
+fn context_trend_and_ci_template() {
+    let t = tempfile::tempdir().unwrap();
+    let run = t.path().join("run");
+    simple_run(&run);
+    let o = cli(&["context", run.to_str().unwrap(), run.to_str().unwrap()]);
+    assert!(String::from_utf8(o.stdout)
+        .unwrap()
+        .contains("No differences"));
+    let out = t.path().join("trend.html");
+    let o = cli(&[
+        "--store",
+        t.path().to_str().unwrap(),
+        "trend",
+        "--case",
+        "=unsafe,case",
+        "--metric",
+        "wall",
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert!(o.status.success());
+    assert!(fs::read_to_string(out).unwrap().contains("<svg"));
+    let ci = t.path().join("ci.yml");
+    assert!(cli(&["ci", "-o", ci.to_str().unwrap()]).status.success());
+    assert!(!cli(&["ci", "-o", ci.to_str().unwrap()]).status.success());
+    let text = fs::read_to_string(ci).unwrap();
+    assert!(text.contains("workflow_dispatch"));
+    assert!(text.contains("include-hidden-files: true"));
+}

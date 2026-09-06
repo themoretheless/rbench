@@ -1,0 +1,616 @@
+mod artifacts;
+mod forma;
+mod git_run;
+mod project;
+mod runner;
+use clap::{Parser, Subcommand};
+use rbench::{analysis, report, *};
+use std::{fs::OpenOptions, io::Write, path::PathBuf, process::Command};
+#[derive(Parser)]
+#[command(
+    name = "cargo rbench",
+    version,
+    about = "Reproducible local benchmarks, explicit metrics, offline A/B reports"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Action,
+    /// Storage for named baselines.
+    #[arg(long, global = true, default_value = ".rbench")]
+    store: PathBuf,
+}
+#[derive(Subcommand)]
+enum Action {
+    /// Show the effort and limitations of named worker sampling profiles.
+    Profiles,
+    /// List recorded runs chronologically; last resolves the latest complete run.
+    History {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show exact environment, provenance and workload-contract differences.
+    Context {
+        baseline: PathBuf,
+        candidate: PathBuf,
+    },
+    /// Descriptive performance history of an exact case/metric.
+    Trend {
+        #[arg(long)]
+        case: String,
+        #[arg(long)]
+        metric: String,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Export raw observations, descriptors and availability.
+    Export {
+        run: PathBuf,
+        #[arg(long)]
+        format: String,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Produce a portable JSON bundle of run, report and notes (no binaries/logs).
+    Bundle {
+        run: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Verify and unpack a bundle into a new directory.
+    Unpack {
+        bundle: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Append a note without altering immutable run data.
+    Note { run: PathBuf, text: String },
+    /// Read the notes attached to an unchanged run.
+    Notes { run: PathBuf },
+    /// Check binaries, fixtures, cwd, deadlines and output without executing workers.
+    Preflight {
+        #[arg(long)]
+        plan: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Compare local committed Git snapshots; current checkout remains untouched.
+    GitCompare {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        baseline: String,
+        #[arg(long)]
+        candidate: String,
+        #[arg(long)]
+        target: String,
+        #[arg(long, default_value = "Cargo.toml")]
+        manifest_path: PathBuf,
+        #[arg(long, default_value_t = 12)]
+        repetitions: u32,
+        #[arg(long)]
+        offline: bool,
+        #[arg(short, long)]
+        output: PathBuf,
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+    /// Write a manually triggered GitHub Actions smoke workflow, never overwrite.
+    Ci {
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Scaffold a checked parameterized benchmark in an existing Cargo package.
+    Init {
+        #[arg(long, default_value = "Cargo.toml")]
+        manifest_path: PathBuf,
+        #[arg(long)]
+        library_path: Option<PathBuf>,
+    },
+    /// Discover Cargo workspace benchmark targets without executing them.
+    Discover {
+        #[arg(long)]
+        manifest_path: Option<PathBuf>,
+        #[arg(long)]
+        offline: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Build all registered workspace targets first, then measure them sequentially.
+    Bench {
+        #[arg(long)]
+        manifest_path: Option<PathBuf>,
+        #[arg(long)]
+        offline: bool,
+        /// Select exact package/target (may repeat); only registered targets are runnable.
+        #[arg(long)]
+        target: Vec<String>,
+        #[arg(long, default_value_t = 12)]
+        repetitions: u32,
+        #[arg(long, default_value_t = 60000)]
+        timeout_ms: u64,
+        #[arg(short, long)]
+        output: PathBuf,
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+    /// Register or list immutable named baseline references.
+    Baseline {
+        #[command(subcommand)]
+        action: BaselineAction,
+    },
+    /// Evaluate exact-case absolute and relative budgets from JSON.
+    Gate {
+        run: PathBuf,
+        #[arg(long, default_value = "rbench.json")]
+        config: PathBuf,
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+        #[arg(long, value_enum, default_value = "fail")]
+        uncertainty: Uncertainty,
+    },
+    /// Execute a JSON plan or one program; output directory must not exist.
+    Run {
+        #[arg(long)]
+        plan: Option<PathBuf>,
+        #[arg(long)]
+        program: Option<PathBuf>,
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+        #[arg(long, default_value_t = 12)]
+        repetitions: u32,
+        #[arg(long, default_value_t = 60000)]
+        timeout_ms: u64,
+        #[arg(long)]
+        protocol: bool,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(short, long)]
+        output: PathBuf,
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+    /// Compare paired run, or two independent runs. Nonzero exit with --check on uncertain results.
+    Compare {
+        baseline: PathBuf,
+        candidate: Option<PathBuf>,
+        #[arg(long, default_value_t = 5.0)]
+        threshold: f64,
+        #[arg(long, default_value_t = 0.05)]
+        alpha: f64,
+        #[arg(long)]
+        json: bool,
+        #[arg(long, value_enum, default_value = "fail")]
+        uncertainty: Uncertainty,
+        #[arg(long)]
+        check: bool,
+        #[arg(long, default_value = "")]
+        filter: String,
+        #[arg(long, default_value = "")]
+        metric: String,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Check every available observation against an absolute maximum (no statistical inference).
+    Check {
+        run: PathBuf,
+        #[arg(long)]
+        metric: String,
+        #[arg(long)]
+        max: f64,
+    },
+    /// Import completed legacy Forma offscreen or paired directories.
+    ImportForma {
+        source: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Regenerate a report offline; .html selects a self-contained HTML file.
+    Report {
+        run: PathBuf,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// List cases already recorded in a run, without executing workloads.
+    List {
+        run: PathBuf,
+        #[arg(long, default_value = "")]
+        filter: String,
+    },
+    /// Build benchmark executables without measuring (for project harness=false benches).
+    Build {
+        #[arg(long)]
+        manifest_path: Option<PathBuf>,
+        #[arg(long)]
+        offline: bool,
+    },
+    /// Print available host capabilities; does not change system settings.
+    Doctor,
+}
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum Uncertainty {
+    Fail,
+    Warn,
+    Record,
+}
+
+#[derive(Subcommand)]
+enum BaselineAction {
+    Save { name: String, run: PathBuf },
+    List,
+}
+fn output(text: &str, path: Option<PathBuf>) -> Result<()> {
+    if let Some(p) = path {
+        let mut f = OpenOptions::new().create_new(true).write(true).open(p)?;
+        f.write_all(text.as_bytes())?;
+    } else {
+        println!("{text}");
+    }
+    Ok(())
+}
+fn execute() -> Result<i32> {
+    let mut args: Vec<_> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|x| x == "rbench") {
+        args.remove(1);
+    }
+    let cli = Cli::parse_from(args);
+    let load = |p: PathBuf| Run::load(project::resolve(&cli.store, &p)?);
+    match cli.command {
+        Action::Profiles => println!("quick: 8 samples × 1 ms + 10 ms warmup/case; smoke only\nnormal: 30 × 5 ms + 50 ms warmup/case\nthorough: 100 × 10 ms + 200 ms warmup/case\nUse worker --profile NAME after --. CLI --repetitions controls independent processes separately. Profiles do not guarantee confidence/precision."),
+        Action::History {json} => {let rows=artifacts::history(&cli.store)?;if json{println!("{}",serde_json::to_string_pretty(&rows)?);}else{for r in rows{println!("{} {} {} {}",r.id,r.status,r.path.display(),r.error.unwrap_or_default());}}},
+        Action::Context {baseline,candidate} => println!("{}",artifacts::context(&load(baseline)?,&load(candidate)?)),
+        Action::Trend {case,metric,output:path} => {
+            let text=artifacts::trend(&cli.store,&case,&metric)?;
+            let text=if path.as_ref().is_some_and(|p|p.extension().is_some_and(|x|x=="html")){artifacts::trend_html(&text)}else{text};output(&text,path)?;
+        },
+        Action::Export {run,format,output:path} => output(&artifacts::export(&load(run)?,&format)?,Some(path))?,
+        Action::Bundle {run,output} => artifacts::bundle(&cli.store,&project::resolve(&cli.store,&run)?,&output)?,
+        Action::Unpack {bundle,output} => artifacts::unpack(&bundle,&output)?,
+        Action::Note {run,text} => artifacts::note(&cli.store,&project::resolve(&cli.store,&run)?,&text)?,
+        Action::Notes {run} => {for n in artifacts::notes(&cli.store,&project::resolve(&cli.store,&run)?)?{println!("{}: {}",n.created_ns,n.text);}},
+        Action::Preflight {plan,output} => println!("{}",serde_json::to_string_pretty(&runner::preflight(serde_json::from_slice(&std::fs::read(plan)?)?,&output)?)?),
+        Action::GitCompare {repo,baseline,candidate,target,manifest_path,repetitions,offline,output,args} => git_run::run(git_run::Request{repo:&repo,base:&baseline,head:&candidate,target:&target,manifest:&manifest_path,output:&output,repetitions,offline,args})?,
+        Action::Ci {output:path} => output(include_str!("ci-template.yml"),Some(path))?,
+        Action::Init {
+            manifest_path,
+            library_path,
+        } => project::init(&manifest_path, library_path.as_deref())?,
+        Action::Discover {
+            manifest_path,
+            offline,
+            json,
+        } => {
+            let targets = project::discover(manifest_path.as_deref(), offline)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&targets)?);
+            } else {
+                for t in targets {
+                    println!(
+                        "{}/{} [{}]",
+                        t.package,
+                        t.name,
+                        if t.registered {
+                            "rbench"
+                        } else {
+                            "unregistered; not auto-run"
+                        }
+                    );
+                }
+            }
+        }
+        Action::Bench {
+            manifest_path,
+            offline,
+            target,
+            repetitions,
+            timeout_ms,
+            output: out,
+            mut args,
+        } => {
+            if out.exists() {
+                return Err(error("output directory already exists"));
+            }
+            if repetitions == 0 || repetitions > 10000 || timeout_ms == 0 {
+                return Err(error("invalid repetitions/timeout"));
+            }
+            let mut targets = project::discover(manifest_path.as_deref(), offline)?;
+            for requested in &target {
+                if !targets
+                    .iter()
+                    .any(|t| t.registered && format!("{}/{}", t.package, t.name) == *requested)
+                {
+                    return Err(error(format!("registered target not found: {requested}")));
+                }
+            }
+            targets.retain(|t| {
+                t.registered
+                    && (target.is_empty() || target.contains(&format!("{}/{}", t.package, t.name)))
+            });
+            if targets.is_empty() {
+                return Err(error(
+                    "no registered targets; use init or package.metadata.rbench.targets",
+                ));
+            }
+            // Complete all compilation before taking any measurements.
+            let builds = targets
+                .iter()
+                .map(|t| project::build(t, offline))
+                .collect::<Result<Vec<_>>>()?;
+            if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::create_dir(&out)?;
+            model::write_new(&out.join("targets.json"), &targets)?;
+            if !args.iter().any(|s| s == "--json") {
+                args.push("--json".into());
+            }
+            for (i, (t, path)) in targets.iter().zip(builds).enumerate() {
+                let directory = out.join(format!("{i}-{}-{}", t.package, t.name));
+                eprintln!(
+                    "rbench: target {}/{} {}/{}",
+                    i + 1,
+                    targets.len(),
+                    t.package,
+                    t.name
+                );
+                let run = runner::run(
+                    runner::Plan {
+                        candidate: runner::Program {
+                            path,
+                            args: args.clone(),
+                            env: Default::default(),
+                            cwd: t.manifest.parent().map(|p| p.to_path_buf()),
+                        },
+                        baseline: None,
+                        repetitions,
+                        timeout_ms,
+                        protocol: true,
+                        fixtures: vec![],
+                        contract: Default::default(),
+                        provenance: Default::default(),
+                    },
+                    &directory,
+                )?;
+                println!("{}\nSaved {}", report::markdown(&run)?, directory.display());
+            }
+        }
+        Action::Baseline { action } => match action {
+            BaselineAction::Save { name, run } => {
+                project::save_baseline(&cli.store, &name, &project::resolve(&cli.store, &run)?)?
+            }
+            BaselineAction::List => project::baselines(&cli.store)?,
+        },
+        Action::Gate {
+            run,
+            config,
+            baseline,
+            json,
+            uncertainty,
+        } => {
+            let config = serde_json::from_slice(&std::fs::read(config)?)?;
+            let run = load(run)?;
+            let baseline = baseline.map(&load).transpose()?;
+            let rows = budget::evaluate(&config, &run, baseline.as_ref())?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+            } else {
+                for row in &rows {
+                    println!(
+                        "{} / {}: {} — {}",
+                        row.case, row.metric, row.decision, row.detail
+                    );
+                }
+            }
+            let code=budget::exit_code(&rows);
+            if code==2 && rows.iter().all(|r|r.decision=="passed"||r.decision=="inconclusive") && !matches!(uncertainty,Uncertainty::Fail) {
+                if matches!(uncertainty,Uncertainty::Warn){eprintln!("rbench: warning: inconclusive budgets allowed by policy; no proof of equivalence");}return Ok(0);
+            }
+            return Ok(code);
+        }
+        Action::Run {
+            plan,
+            program,
+            baseline,
+            repetitions,
+            timeout_ms,
+            protocol,
+            dry_run,
+            output: out,
+            args,
+        } => {
+            if plan.is_some()
+                && (program.is_some()
+                    || baseline.is_some()
+                    || !args.is_empty()
+                    || protocol
+                    || repetitions != 12
+                    || timeout_ms != 60000)
+            {
+                return Err(error("--plan cannot be combined with command overrides"));
+            }
+            let plan = if let Some(p) = plan {
+                serde_json::from_reader(std::fs::File::open(p)?)?
+            } else {
+                let p = program.ok_or_else(|| error("provide --plan or --program"))?;
+                let program = |p| runner::Program {
+                    path: p,
+                    args: args.clone(),
+                    env: Default::default(),
+                    cwd: None,
+                };
+                runner::Plan {
+                    candidate: program(p),
+                    baseline: baseline.map(program),
+                    repetitions,
+                    timeout_ms,
+                    protocol,
+                    fixtures: vec![],
+                    contract: Default::default(),
+                        provenance: Default::default(),
+                }
+            };
+            if dry_run {println!("{}",serde_json::to_string_pretty(&runner::preflight(plan,&out)?)?);return Ok(0);}
+            let run = runner::run(plan, &out)?;
+            println!("{}\nSaved {}", report::markdown(&run)?, out.display());
+        }
+        Action::ImportForma {
+            source,
+            output: out,
+        } => {
+            let run = forma::import(&source)?;
+            run.save_new(&out)?;
+            println!(
+                "Imported {} cases / {} observations → {}",
+                run.cases.len(),
+                run.observations.len(),
+                out.display()
+            );
+        }
+        Action::Report { run, output: path } => {
+            let resolved=project::resolve(&cli.store,&run)?;
+            let mut run = Run::load(&resolved)?;
+            for note in artifacts::notes(&cli.store,&resolved)? {run.notes.push(format!("User note: {}",note.text));}
+            let text = report::markdown(&run)?;
+            let text = if path
+                .as_ref()
+                .is_some_and(|p| p.extension().is_some_and(|e| e == "html"))
+            {
+                report::html_run(&run)?
+            } else {
+                text
+            };
+            output(&text, path)?;
+        }
+        Action::List { run, filter } => {
+            for c in load(run)?.cases {
+                if c.id.contains(&filter) {
+                    println!("{}", c.id);
+                }
+            }
+        }
+        Action::Compare {
+            baseline,
+            candidate,
+            threshold,
+            alpha,
+            json,
+            uncertainty,
+            check,
+            filter,
+            metric,
+            output: path,
+        } => {
+            let select = |mut r: Run| -> Result<Run> {
+                r.cases.retain(|c| c.id.contains(&filter));
+                for c in &mut r.cases {
+                    c.metrics.retain(|m| m.id.contains(&metric));
+                }
+                r.cases.retain(|c| !c.metrics.is_empty());
+                r.observations.retain(|o| {
+                    r.cases
+                        .iter()
+                        .any(|c| c.id == o.case && c.metrics.iter().any(|m| m.id == o.metric))
+                });
+                r.validate()?;
+                Ok(r)
+            };
+            let a = select(load(baseline)?)?;
+            let b = candidate.map(|p| select(load(p)?)).transpose()?;
+            let rows = analysis::compare(&a, b.as_ref(), threshold, alpha)?;
+            let text = if json {
+                serde_json::to_string_pretty(&rows)?
+            } else {
+                report::comparison(&rows)
+            };
+            output(&text, path)?;
+            if check {
+                if rows
+                    .iter()
+                    .any(|r| r.decision == analysis::Decision::Regression)
+                {
+                    return Ok(1);
+                }
+                if rows.iter().any(|r|r.decision==analysis::Decision::Unavailable){return Ok(2);}
+                if rows.iter().any(|r|r.decision==analysis::Decision::Inconclusive){
+                    if matches!(uncertainty,Uncertainty::Fail){return Ok(2);}
+                    if matches!(uncertainty,Uncertainty::Warn){eprintln!("rbench: warning: inconclusive comparison allowed by explicit policy; no proof of equivalence");}
+                }
+            }
+        }
+        Action::Build {
+            manifest_path,
+            offline,
+        } => {
+            let mut c = Command::new("cargo");
+            c.args(["bench", "--no-run"]);
+            if let Some(p) = manifest_path {
+                c.arg("--manifest-path").arg(p);
+            }
+            if offline {
+                c.arg("--offline");
+            }
+            if !c.status()?.success() {
+                return Err(error("Cargo benchmark build failed"));
+            }
+        }
+        Action::Check { run, metric, max } => {
+            if !max.is_finite() || max < 0.0 {
+                return Err(error("--max must be finite and nonnegative"));
+            }
+            let run = load(run)?;
+            if run.status != Status::Complete {
+                return Err(error("check requires complete run"));
+            }
+            let mut count = 0;
+            let mut failed = false;
+            for o in run.observations.iter().filter(|o| o.metric == metric) {
+                count += 1;
+                let mut value = o
+                    .number()?
+                    .ok_or_else(|| error("required metric unavailable"))?;
+                let m = run
+                    .cases
+                    .iter()
+                    .find(|c| c.id == o.case)
+                    .unwrap()
+                    .metrics
+                    .iter()
+                    .find(|m| m.id == metric)
+                    .unwrap();
+                if m.statistic == "batch_total" {
+                    value /= o.operations as f64;
+                }
+                if value > max {
+                    eprintln!(
+                        "{} {} process {}: {value} {} > {max}",
+                        o.case, o.variant, o.process, m.unit
+                    );
+                    failed = true;
+                }
+            }
+            if count == 0 {
+                return Err(error("metric not found"));
+            }
+            println!("Checked {count} observations; absolute max {max}. This is a budget check, not a statistical comparison.");
+            if failed {
+                return Ok(1);
+            }
+        }
+        Action::Doctor => {
+            println!("rbench {}\nOS: {}\nArch: {}\nClock: std::time::Instant\nProcess tree cleanup: {}\nGPU: supplied by scenario (not probed)\nWindow: supplied by scenario (not probed)\nIsolation: local runner lease only\nStatistics: independent process units required",env!("CARGO_PKG_VERSION"),std::env::consts::OS,std::env::consts::ARCH,if cfg!(unix){"Unix process groups"}else{"direct child only; descendants unsupported"});
+        }
+    }
+    Ok(0)
+}
+fn main() {
+    runner::install_cancel_handler();
+    match execute() {
+        Ok(0) => {}
+        Ok(code) => std::process::exit(code),
+        Err(e) => {
+            eprintln!("rbench: {e}");
+            std::process::exit(2);
+        }
+    }
+}
