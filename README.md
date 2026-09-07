@@ -77,3 +77,11 @@ Runner чередует AB/BA, последовательно запускает
 Исследование охватило 779 записей; 614 репозиториев оставлены после скрининга. Это анализ документации с углублёнными выборочными просмотрами исходников ключевых движков, а не полный аудит или сравнительный запуск сотен библиотек.
 
 [Итоги и методика](research/REPORT.md) · [Ключевые решения](research/FOCUSED.md) · [Потребности проектов, особенно Forma](docs/REQUIREMENTS.md) · [Реестр](research/REPOSITORIES.md) · [Решение по каждой записи](research/DECISIONS.tsv)
+
+## Advanced workflows
+
+The final twenty features are implemented with explicit capability limits: privacy policies,
+process diagnostics and pilot planning, A/B/C, optional benchmark attributes, async/thread/pipeline
+helpers, cold runs, allocation phases, Forma GPU/window measurement, argument matrices,
+profiler replay, linked continuation, reversible retention and bounded revision searches.
+See [FINAL20.md](docs/FINAL20.md) for runnable examples, validation evidence and limitations.

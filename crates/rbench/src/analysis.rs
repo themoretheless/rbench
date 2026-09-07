@@ -276,3 +276,50 @@ pub fn compare(a: &Run, b: Option<&Run>, threshold: f64, alpha: f64) -> Result<V
     }
     Ok(result)
 }
+
+#[derive(Debug, Serialize)]
+pub struct MultiComparison {
+    pub reference: String,
+    pub variant: String,
+    pub comparison: Comparison,
+}
+/// Every variant against one predeclared reference; family correction spans variants AND metrics.
+/// No total ranking is implied by intervals overlapping or an inconclusive comparison.
+pub fn compare_multi(
+    run: &Run,
+    reference: &str,
+    threshold: f64,
+    alpha: f64,
+) -> Result<Vec<MultiComparison>> {
+    run.validate()?;
+    let names: BTreeSet<_> = run
+        .observations
+        .iter()
+        .map(|o| o.variant.as_str())
+        .collect();
+    if !names.contains(reference) || names.len() < 2 {
+        return Err(error("reference and at least one alternative required"));
+    }
+    let mut result = vec![];
+    for name in names.iter().filter(|n| **n != reference) {
+        let mut pair = run.clone();
+        pair.observations
+            .retain(|o| o.variant == reference || o.variant == *name);
+        for o in &mut pair.observations {
+            o.variant = if o.variant == reference {
+                "baseline"
+            } else {
+                "candidate"
+            }
+            .into();
+        }
+        for comparison in compare(&pair, None, threshold, alpha / (names.len() - 1) as f64)? {
+            result.push(MultiComparison {
+                reference: reference.into(),
+                variant: (*name).into(),
+                comparison,
+            });
+        }
+    }
+    Ok(result)
+}

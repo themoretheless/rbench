@@ -18,3 +18,17 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + S
 pub fn error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
     std::io::Error::other(message.into()).into()
 }
+
+/// Attribute registration rejects ambiguous lifecycle signatures.
+/// ```compile_fail
+/// #[rbench::bench]
+/// fn has_arguments(input: usize) -> usize { input }
+/// ```
+/// ```compile_fail
+/// #[rbench::bench]
+/// async fn implicit_runtime() {}
+/// ```
+#[cfg(feature = "macros")]
+pub use rbench_macros::bench;
+pub mod diagnostics;
+pub mod workloads;

@@ -488,7 +488,11 @@ fn profiles_seeded_inputs_and_work_units() {
     assert_eq!(Seeded::new(42).bytes(31), Seeded::new(42).bytes(31));
     assert_ne!(Seeded::new(42).bytes(31), Seeded::new(43).bytes(31));
     let mut s = Suite::new("units");
-    s.bench("x", || 1).work_units("bytes", 0);
+    s.bench("x", || {
+        std::thread::sleep(Duration::from_micros(10));
+        1
+    })
+    .work_units("bytes", 0);
     assert!(s.run("").is_err());
     s.work_units("bytes", 64).seed(42);
     s.config(Config {
@@ -515,4 +519,219 @@ fn diagnostic_reports_prioritize_regressions_and_plot_raw_data() {
     let plot = report::plot("<script>", &[(0., 1.), (1., 2.)]);
     assert!(!plot.contains("<script>"));
     assert!(plot.contains("&lt;script&gt;"));
+}
+
+#[test]
+fn lifecycle_helpers_join_and_cancel() {
+    use rbench::workloads::*;
+    let active = std::sync::atomic::AtomicUsize::new(0);
+    let peak = std::sync::atomic::AtomicUsize::new(0);
+    let result = parallel(4, |i| {
+        let n = active.fetch_add(1, Ordering::SeqCst) + 1;
+        peak.fetch_max(n, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(20));
+        active.fetch_sub(1, Ordering::SeqCst);
+        i * i
+    })
+    .unwrap();
+    assert_eq!(result.outputs, vec![0, 1, 4, 9]);
+    assert_eq!(active.load(Ordering::SeqCst), 0);
+    assert!(peak.load(Ordering::SeqCst) > 1);
+    assert!(parallel(4, |i| {
+        if i == 2 {
+            panic!("controlled worker failure")
+        }
+        i
+    })
+    .is_err());
+    assert!(parallel(0, |_| 0).is_err());
+    let cancellation = Cancellation::default();
+    let p = pipeline((0..100).collect(), 2, &cancellation, |i| i * 2).unwrap();
+    assert_eq!(p.outputs, (0..100).map(|i| i * 2).collect::<Vec<_>>());
+    assert_eq!(p.latency_ns.len(), 100);
+    assert_eq!(p.processed, 100);
+    assert!(pipeline(vec![1], 0, &cancellation, |i| i).is_err());
+    let c = cancellation.clone();
+    assert!(pipeline((0..100).collect(), 1, &cancellation, move |i| {
+        if i == 3 {
+            c.cancel();
+        }
+        i
+    })
+    .is_err());
+}
+#[test]
+fn async_wakeup_and_cold_first_invocation() {
+    use rbench::workloads::*;
+    struct Once(bool);
+    impl std::future::Future for Once {
+        type Output = u32;
+        fn poll(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<u32> {
+            if self.0 {
+                std::task::Poll::Ready(42)
+            } else {
+                self.0 = true;
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        }
+    }
+    assert_eq!(LocalExecutor.block_on(Once(false)), 42);
+    let calls = std::cell::Cell::new(0);
+    let mut s = Suite::new("test");
+    s.bench_async("async", LocalExecutor, || async {
+        calls.set(calls.get() + 1);
+        42
+    })
+    .cold();
+    let r = s.run("").unwrap();
+    assert_eq!(calls.get(), 1);
+    assert_eq!(r.observations.len(), 1);
+    assert_eq!(r.observations[0].operations, 1);
+    assert_eq!(r.cases[0].contract["warmup_ns"], "0");
+    assert!(s.run("").is_err());
+    s.bench("second", || 0);
+    assert!(s.run("").is_err());
+}
+#[test]
+fn phase_peak_realloc_and_cross_thread_free() {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    let a = alloc::TrackingAllocator::new(System);
+    let l = Layout::from_size_align(128, 8).unwrap();
+    unsafe {
+        let p = a.alloc(l);
+        assert!(!p.is_null());
+        let phase = a.begin_phase().unwrap();
+        assert!(a.begin_phase().is_err());
+        let p = a.realloc(p, l, 512);
+        assert!(!p.is_null());
+        let address = p as usize;
+        std::thread::scope(|s| {
+            let a = &a;
+            s.spawn(move || {
+                a.dealloc(address as *mut u8, Layout::from_size_align(512, 8).unwrap())
+            })
+            .join()
+            .unwrap();
+        });
+        let r = phase.finish();
+        assert_eq!(r.live_start_bytes, 128);
+        assert_eq!(r.live_end_bytes, 0);
+        assert_eq!(r.peak_live_bytes, 512);
+        assert_eq!(r.reallocations, 1);
+        assert_eq!(r.deallocations, 1);
+        let next = a.begin_phase().unwrap().finish();
+        assert_eq!(next.peak_live_bytes, 0);
+        assert_eq!(next.lifetime_peak_bytes, 512);
+    }
+}
+#[test]
+fn diagnostics_known_drift_and_order() {
+    let stable = paired(12, 1.);
+    let d = diagnostics::diagnose(&stable).unwrap();
+    assert!(d.iter().all(|v| v.relative_mad_percent.unwrap() < 5.));
+    let mut drift = stable.clone();
+    for o in &mut drift.observations {
+        o.value = Some((100 + o.process * 10).to_string());
+    }
+    assert!(diagnostics::diagnose(&drift)
+        .unwrap()
+        .iter()
+        .all(|d| d.flags.iter().any(|s| s.contains("chronological"))));
+    let mut ordered = paired(12, 1.);
+    for o in &mut ordered.observations {
+        let p = o.pair.unwrap();
+        let baseline = o.variant == "baseline";
+        o.process = 2 * p + u32::from(baseline == (p % 2 == 1));
+        o.value = Some(
+            if baseline {
+                "100"
+            } else if p % 2 == 0 {
+                "120"
+            } else {
+                "100"
+            }
+            .into(),
+        );
+    }
+    let rows = diagnostics::order_effects(&ordered).unwrap();
+    assert!(rows[0].flagged);
+    assert_eq!(rows[0].ab_pairs, 6);
+    assert_eq!(rows[0].ba_pairs, 6);
+}
+#[test]
+fn multi_reference_family_and_deadlines() {
+    let mut r = paired(18, 1.2);
+    let mut third = vec![];
+    for o in &mut r.observations {
+        o.process = o.pair.unwrap() * 3 + u32::from(o.variant == "candidate");
+        if o.variant == "baseline" {
+            let mut c = o.clone();
+            c.variant = "third".into();
+            c.process += 2;
+            third.push(c);
+        }
+    }
+    r.observations.extend(third);
+    let rows = analysis::compare_multi(&r, "baseline", 5., 0.05).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].comparison.decision, Decision::Regression);
+    assert_eq!(rows[1].comparison.decision, Decision::WithinMargin);
+    assert!(diagnostics::deadlines(&r, "case", "latency", &[60.]).is_err());
+    let mut r = paired(12, 1.);
+    r.cases[0].metrics[0].statistic = "individual frame".into();
+    for o in &mut r.observations {
+        o.value = Some(
+            if o.process % 4 == 0 {
+                "20000000"
+            } else {
+                "10000000"
+            }
+            .into(),
+        );
+    }
+    let d = diagnostics::deadlines(&r, "case", "latency", &[60., 120.]).unwrap();
+    assert_eq!(d[0].over_budget, 0);
+    assert_eq!(d[1].over_budget, 12);
+}
+#[cfg(feature = "macros")]
+#[rbench::bench]
+fn attributed_work() -> usize {
+    std::hint::black_box(7)
+}
+#[cfg(feature = "macros")]
+#[test]
+fn macro_uses_builder_identity() {
+    let mut s = Suite::new("test");
+    register_attributed_work(&mut s);
+    s.cold();
+    let r = s.run("").unwrap();
+    assert_eq!(r.cases[0].id, "test/attributed_work");
+}
+#[test]
+fn pilot_independent_confirmation_coverage() {
+    let mut rng = Seeded::new(9182);
+    let mut covered = 0;
+    let mut false_positive = 0;
+    let experiments = 2000;
+    for _ in 0..experiments {
+        let mut pilot = paired(12, 1.);
+        for o in &mut pilot.observations {
+            o.value = Some((0.5 + (rng.next_u64() as f64 / u64::MAX as f64)).to_string());
+        }
+        let n = diagnostics::pilot(&pilot, 10., 100).unwrap()[0]
+            .proposed_processes
+            .unwrap();
+        let v: Vec<_> = (0..n)
+            .map(|_| 0.5 + rng.next_u64() as f64 / u64::MAX as f64)
+            .collect();
+        let (l, h) = median_interval(&v, 0.05).unwrap();
+        covered += usize::from(l <= 1. && h >= 1.);
+        false_positive += usize::from(l > 1. || h < 1.);
+    }
+    assert!(covered as f64 / experiments as f64 > 0.94);
+    assert!(false_positive as f64 / (experiments as f64) < 0.06);
 }

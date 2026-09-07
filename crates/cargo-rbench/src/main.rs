@@ -1,8 +1,12 @@
 mod artifacts;
 mod forma;
 mod git_run;
+mod matrix;
+mod privacy;
 mod project;
+mod revisions;
 mod runner;
+mod sessions;
 use clap::{Parser, Subcommand};
 use rbench::{analysis, report, *};
 use std::{fs::OpenOptions, io::Write, path::PathBuf, process::Command};
@@ -21,6 +25,100 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Action {
+    /// Execute a Cartesian matrix of explicit worker CLI arguments, sequentially.
+    Matrix {
+        #[arg(long)]
+        plan: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Search a bounded first-parent history; audit every commit to detect nonmonotonic regressions.
+    Bisect {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        good: String,
+        #[arg(long)]
+        bad: String,
+        #[arg(long)]
+        target: String,
+        #[arg(long, default_value = "Cargo.toml")]
+        manifest_path: PathBuf,
+        #[arg(long, default_value_t = 12)]
+        repetitions: u32,
+        #[arg(long, default_value_t = 16)]
+        max_commits: usize,
+        #[arg(long)]
+        offline: bool,
+        #[arg(short, long)]
+        output: PathBuf,
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+    /// Continue an interrupted allowlisted experiment as a new linked session.
+    Resume {
+        run: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Replay one recorded case under an explicit profiler executable.
+    Profile {
+        run: PathBuf,
+        #[arg(long)]
+        case: String,
+        #[arg(long)]
+        profiler: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+    /// Inventory storage; --apply moves eligible owned runs into reversible quarantine.
+    Retention {
+        #[arg(long, default_value_t = 20)]
+        keep: usize,
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Diagnose between-process spread, chronological drift and AB/BA effects.
+    Diagnose { run: PathBuf },
+    /// Plan a NEW confirmation experiment; the pilot is never pooled automatically.
+    Pilot {
+        run: PathBuf,
+        #[arg(long, default_value_t = 5.0)]
+        precision: f64,
+        #[arg(long, default_value_t = 200)]
+        max_processes: usize,
+    },
+    /// Raw frame deadline exceedance; does not infer compositor-dropped frames.
+    Deadlines {
+        run: PathBuf,
+        #[arg(long)]
+        case: String,
+        #[arg(long)]
+        metric: String,
+        #[arg(long, value_delimiter = ',', default_value = "60,120,144")]
+        hz: Vec<f64>,
+    },
+    /// Compare all variants against one reference with family-wise correction.
+    Multi {
+        run: PathBuf,
+        #[arg(long, default_value = "baseline")]
+        reference: String,
+        #[arg(long, default_value_t = 5.0)]
+        threshold: f64,
+        #[arg(long, default_value_t = 0.05)]
+        alpha: f64,
+    },
+    /// Prepare a PR comment from a completed base/head run; never publishes.
+    PrReport {
+        run: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Preview the exact categories and sizes included in a bundle.
+    ExportPreview { run: PathBuf },
+
     /// Show the effort and limitations of named worker sampling profiles.
     Profiles,
     /// List recorded runs chronologically; last resolves the latest complete run.
@@ -257,6 +355,27 @@ fn execute() -> Result<i32> {
     let cli = Cli::parse_from(args);
     let load = |p: PathBuf| Run::load(project::resolve(&cli.store, &p)?);
     match cli.command {
+        Action::Matrix{plan,output}=>matrix::run(serde_json::from_slice(&std::fs::read(plan)?)?,&output)?,
+        Action::Bisect{repo,good,bad,target,manifest_path,repetitions,max_commits,offline,output,args}=>revisions::run(revisions::Search{repo:&repo,good:&good,bad:&bad,target:&target,manifest:&manifest_path,out:&output,repetitions,max_commits,offline,args})?,
+        Action::Resume{run,output}=>sessions::resume(&project::resolve(&cli.store,&run)?,&output)?,
+        Action::Profile{run,case,profiler,output,args}=>sessions::profile(&project::resolve(&cli.store,&run)?,&case,&profiler,args,&output)?,
+        Action::Retention{keep,apply}=>println!("{}",serde_json::to_string_pretty(&sessions::retention(&cli.store,keep,apply)?)?),
+        Action::Diagnose{run} => {let r=load(run)?;println!("{}",serde_json::to_string_pretty(&serde_json::json!({"spread_and_drift":diagnostics::diagnose(&r)?,"order":diagnostics::order_effects(&r)?,"status":r.status,"unavailable_observations":r.observations.iter().filter(|o|o.availability!=Availability::Available).count(),"interpretation":"Descriptive thresholds; missing observations excluded and counted. No causal or significance inference."}))?);},
+        Action::Pilot{run,precision,max_processes}=>println!("{}",serde_json::to_string_pretty(&diagnostics::pilot(&load(run)?,precision,max_processes)?)?),
+        Action::Deadlines{run,case,metric,hz}=>println!("{}",serde_json::to_string_pretty(&diagnostics::deadlines(&load(run)?,&case,&metric,&hz)?)?),
+        Action::Multi{run,reference,threshold,alpha}=>println!("{}",serde_json::to_string_pretty(&analysis::compare_multi(&load(run)?,&reference,threshold,alpha)?)?),
+        Action::PrReport{run,output:path}=>{
+            let r=load(run)?;
+            let base=r.provenance.get("user.git.baseline").ok_or_else(||error("base revision absent; use git-compare"))?;
+            let head=r.provenance.get("user.git.candidate").ok_or_else(||error("head revision absent; use git-compare"))?;
+            let rows=analysis::compare(&r,None,5.,0.05)?;
+            output(&format!("## Benchmark comparison\n\nBase: `{}`\nHead: `{}`\n\n{}\n\nFixed process-pair design, 5% practical margin, 95% family confidence. Inconclusive means insufficient evidence, not equivalence. Workload contracts and metric scopes are part of the attached run artifact.\n",report::escape(base),report::escape(head),report::comparison(&rows)),Some(path))?;
+        },
+        Action::ExportPreview{run}=>{
+            let resolved=project::resolve(&cli.store,&run)?;let r=Run::load(&resolved)?;let notes=artifacts::notes(&cli.store,&resolved)?;
+            println!("{}",serde_json::to_string_pretty(&serde_json::json!({"file_bytes":{"run.json":std::fs::metadata(if resolved.is_dir(){resolved.join("run.json")}else{resolved.clone()})?.len(),"report.html":report::html_run(&r)?.len(),"notes.json":serde_json::to_string_pretty(&notes)?.len()},"run_id":r.id,"cases":r.cases.len(),"observations":r.observations.len(),"environment_keys":r.environment.keys().collect::<Vec<_>>(),"provenance_keys":r.provenance.keys().collect::<Vec<_>>(),"notes":notes.len(),"included":["run.json: all contracts, environment, provenance, observations and notes","report.html: derived report","notes.json: sidecar user notes"],"excluded":["worker logs","binaries","fixtures","plan"],"review":"Inspect run and notes before sharing. Preview does not certify absence of unknown or transformed secrets."}))?);
+        },
+
         Action::Profiles => println!("quick: 8 samples × 1 ms + 10 ms warmup/case; smoke only\nnormal: 30 × 5 ms + 50 ms warmup/case\nthorough: 100 × 10 ms + 200 ms warmup/case\nUse worker --profile NAME after --. CLI --repetitions controls independent processes separately. Profiles do not guarantee confidence/precision."),
         Action::History {json} => {let rows=artifacts::history(&cli.store)?;if json{println!("{}",serde_json::to_string_pretty(&rows)?);}else{for r in rows{println!("{} {} {} {}",r.id,r.status,r.path.display(),r.error.unwrap_or_default());}}},
         Action::Context {baseline,candidate} => println!("{}",artifacts::context(&load(baseline)?,&load(candidate)?)),
@@ -356,6 +475,9 @@ fn execute() -> Result<i32> {
                 );
                 let run = runner::run(
                     runner::Plan {
+                        privacy: None,
+                        variants: Default::default(),
+                        start_pair:0,
                         candidate: runner::Program {
                             path,
                             args: args.clone(),
@@ -440,6 +562,9 @@ fn execute() -> Result<i32> {
                     cwd: None,
                 };
                 runner::Plan {
+                        privacy: None,
+                        variants: Default::default(),
+                        start_pair:0,
                     candidate: program(p),
                     baseline: baseline.map(program),
                     repetitions,

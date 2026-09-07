@@ -23,6 +23,13 @@ pub struct Program {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Plan {
+    #[serde(default)]
+    pub privacy: Option<crate::privacy::Policy>,
+    /// Additional variants compared against baseline in a balanced crossover.
+    #[serde(default)]
+    pub variants: BTreeMap<String, Program>,
+    #[serde(default)]
+    pub start_pair: u32,
     pub candidate: Program,
     pub baseline: Option<Program>,
     #[serde(default = "repeats")]
@@ -62,7 +69,7 @@ pub fn install_cancel_handler() {
         libc::signal(libc::SIGTERM, cancel as *const () as libc::sighandler_t);
     }
 }
-struct Lease(PathBuf);
+pub(crate) struct Lease(PathBuf);
 impl Drop for Lease {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
@@ -96,6 +103,23 @@ pub fn run(mut plan: Plan, out: &Path) -> Result<Run> {
             "repetitions 1..10000; timeout-ms 1..86400000 required",
         ));
     }
+    plan.contract.insert(
+        "runner.log_capture".into(),
+        "bounded piped capture v1; reader threads outside worker".into(),
+    );
+    plan.contract.insert(
+        "runner.environment_policy".into(),
+        serde_json::to_string(&plan.privacy)?,
+    );
+    let privacy = plan
+        .privacy
+        .as_ref()
+        .map(|p| p.prepare(&plan))
+        .transpose()?;
+    validate_variants(&plan)?;
+    for p in plan.variants.values_mut() {
+        resolve(p)?;
+    }
     resolve(&mut plan.candidate)?;
     if let Some(p) = &mut plan.baseline {
         resolve(p)?;
@@ -106,25 +130,31 @@ pub fn run(mut plan: Plan, out: &Path) -> Result<Run> {
         .iter()
         .chain(std::iter::once(&plan.candidate.path))
         .chain(plan.baseline.iter().map(|p| &p.path))
+        .chain(plan.variants.values().map(|p| &p.path))
     {
         let p = fs::canonicalize(p)?;
         hashes.insert(p.clone(), hash_file(&p)?);
     }
-    // Per-user lock coordinates local rbench processes across output directories.
-    let uid = std::env::var("USER")
-        .unwrap_or_else(|_| "default".into())
-        .replace(|c: char| !c.is_ascii_alphanumeric(), "_");
-    let lock = std::env::temp_dir().join(format!("rbench-{uid}.lock"));
-    let mut lock_file=OpenOptions::new().write(true).create_new(true).open(&lock).map_err(|e|error(format!("cannot acquire {}: {e}; another runner may be active. Inspect stale lock before removing it",lock.display())))?;
-    use std::io::Write;
-    writeln!(lock_file, "pid={}", std::process::id())?;
-    let _lease = Lease(lock);
+    let _lease = acquire_lease()?;
     if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
     fs::create_dir(out)?;
     fs::create_dir(out.join("logs"))?;
     let mut result = Run::new();
+    if let Some(policy) = &privacy {
+        let env: BTreeMap<_, _> = policy
+            .environment()
+            .iter()
+            .filter(|(k, _)| !plan.privacy.as_ref().unwrap().secret_env.contains(k))
+            .collect();
+        let environment = serde_json::to_string(&env)?;
+        plan.contract
+            .insert("runner.allowed_environment".into(), environment.clone());
+        result
+            .provenance
+            .insert("allowed_environment".into(), environment);
+    }
     result.provenance.extend(
         plan.provenance
             .iter()
@@ -154,26 +184,18 @@ pub fn run(mut plan: Plan, out: &Path) -> Result<Run> {
     result
         .provenance
         .insert("input_hashes".into(), serde_json::to_string(&hashes)?);
-    let mut schedule = vec![];
-    for pair in 0..plan.repetitions {
-        let names = if plan.baseline.is_some() {
-            if pair % 2 == 0 {
-                vec!["baseline", "candidate"]
-            } else {
-                vec!["candidate", "baseline"]
-            }
-        } else {
-            vec!["candidate"]
-        };
-        for variant in names {
-            schedule.push(Entry {
-                process: schedule.len() as u32,
-                pair: plan.baseline.as_ref().map(|_| pair),
-                variant: variant.into(),
-            });
-        }
+    if let Some(privacy) = &privacy {
+        privacy.reject_literals(&result)?;
+    }
+    let schedule = schedule(&plan);
+    if let Some(policy) = &plan.privacy {
+        policy.prepare(&plan)?;
+        result.notes.push("Explicit environment allowlist enabled. Secret values redacted literally and JSON-escaped before log persistence. Encoded or transformed disclosures are outside this policy.".into());
     }
     write_new(&out.join("plan.json"), &plan)?;
+    result
+        .provenance
+        .insert("plan.sha256".into(), hash_file(&out.join("plan.json"))?);
     write_new(&out.join("schedule.json"), &schedule)?;
     write_new(
         &out.join("status.json"),
@@ -189,8 +211,10 @@ pub fn run(mut plan: Plan, out: &Path) -> Result<Run> {
             let observation_start = result.observations.len();
             let p = if e.variant == "baseline" {
                 plan.baseline.as_ref().unwrap()
-            } else {
+            } else if e.variant == "candidate" {
                 &plan.candidate
+            } else {
+                &plan.variants[&e.variant]
             };
             let stdout = out
                 .join("logs")
@@ -199,11 +223,14 @@ pub fn run(mut plan: Plan, out: &Path) -> Result<Run> {
                 .join("logs")
                 .join(format!("{}-{}.stderr", e.process, e.variant));
             let mut command = Command::new(&p.path);
+            if let Some(policy) = &privacy {
+                policy.command(&mut command);
+            }
             command
                 .args(&p.args)
                 .envs(&p.env)
-                .stdout(Stdio::from(File::create(&stdout)?))
-                .stderr(Stdio::from(File::create(&stderr)?))
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
                 .stdin(Stdio::null());
             if let Some(c) = &p.cwd {
                 command.current_dir(c);
@@ -232,7 +259,12 @@ pub fn run(mut plan: Plan, out: &Path) -> Result<Run> {
             );
             let start = Instant::now();
             let mut heartbeat = Instant::now();
+            // Declare capture before child: error unwinding kills the process group before joining pipes.
+            let mut logs = crate::privacy::Logs::new();
             let mut child = ChildGuard(command.spawn()?);
+            let needles = privacy.as_ref().map(|p| p.needles()).unwrap_or_default();
+            logs.start(child.0.stdout.take().unwrap(), &stdout, needles.clone())?;
+            logs.start(child.0.stderr.take().unwrap(), &stderr, needles)?;
             loop {
                 if CANCELLED.load(std::sync::atomic::Ordering::Relaxed) {
                     return Err(error("run cancelled"));
@@ -289,6 +321,7 @@ pub fn run(mut plan: Plan, out: &Path) -> Result<Run> {
             }
             let elapsed = start.elapsed().as_nanos();
             drop(child);
+            logs.finish()?;
             // Do not import results from changed inputs, including changes between pairs.
             for (p, expected) in &hashes {
                 if hash_file(p)? != *expected {
@@ -309,6 +342,19 @@ pub fn run(mut plan: Plan, out: &Path) -> Result<Run> {
                 }
                 let mut worker: Run = serde_json::from_str(messages[0])?;
                 worker.validate()?;
+                if let Some(descriptor) = plan.provenance.get("diagnostic.expected_descriptor") {
+                    let expected: Case = serde_json::from_str(descriptor)?;
+                    if worker.cases != vec![expected] {
+                        return Err(error(
+                            "profiler worker changed workload descriptor or contract",
+                        ));
+                    }
+                }
+                if let Some(case) = plan.provenance.get("diagnostic.expected_case") {
+                    if worker.cases.len() != 1 || worker.cases[0].id != *case {
+                        return Err(error("profiler worker changed requested case identity"));
+                    }
+                }
                 if worker.status != Status::Complete {
                     return Err(error("worker returned incomplete run"));
                 }
@@ -346,6 +392,14 @@ pub fn run(mut plan: Plan, out: &Path) -> Result<Run> {
                                 .collect::<Result<BTreeMap<_, _>>>()?,
                         )?,
                     );
+                }
+                if let Some(expected) = plan.provenance.get("session.expected_cases") {
+                    let expected: Vec<Case> = serde_json::from_str(expected)?;
+                    if worker.cases != expected {
+                        return Err(error(
+                            "resumed worker context/contracts differ from parent session",
+                        ));
+                    }
                 }
                 if result.cases.is_empty() {
                     result.cases = worker.cases;
@@ -421,6 +475,9 @@ pub fn run(mut plan: Plan, out: &Path) -> Result<Run> {
     if let Err(e) = &execution {
         result.notes.push(e.to_string());
     }
+    if let Some(privacy) = &privacy {
+        privacy.reject_literals(&result)?;
+    }
     write_new(&out.join("run.json"), &result)?;
     let status = serde_json::json!({"state":result.status,"error":execution.as_ref().err().map(|e|e.to_string())});
     write_new(&out.join("status-final.json"), &status)?;
@@ -441,8 +498,15 @@ pub fn preflight(mut plan: Plan, out: &Path) -> Result<serde_json::Value> {
     {
         return Err(error("invalid repetitions/timeout"));
     }
+    if let Some(policy) = &plan.privacy {
+        policy.prepare(&plan)?;
+    }
+    validate_variants(&plan)?;
     let mut hashes = BTreeMap::new();
-    for p in std::iter::once(&mut plan.candidate).chain(plan.baseline.iter_mut()) {
+    for p in std::iter::once(&mut plan.candidate)
+        .chain(plan.baseline.iter_mut())
+        .chain(plan.variants.values_mut())
+    {
         resolve(p)?;
         if !p.path.is_file() {
             return Err(error("program must be a file"));
@@ -486,18 +550,82 @@ pub fn preflight(mut plan: Plan, out: &Path) -> Result<serde_json::Value> {
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
-    let order: Vec<_> = (0..plan.repetitions)
-        .map(|i| {
-            if plan.baseline.is_none() {
-                vec!["candidate"]
-            } else if i % 2 == 0 {
-                vec!["baseline", "candidate"]
-            } else {
-                vec!["candidate", "baseline"]
-            }
-        })
-        .collect();
+    let order = schedule(&plan);
     Ok(
         serde_json::json!({"plan":plan,"order":order,"hashes":hashes,"output":out,"disk_space_kib":space,"capabilities":{"clock":"Instant","unix_process_group":cfg!(unix),"gpu":"scenario-owned; not probed"},"note":"No workload executed. Actual worker cases/driver capabilities are not inferred from a binary. Worker --dry-run lists registered Suite cases."}),
     )
+}
+
+fn validate_variants(plan: &Plan) -> Result<()> {
+    if plan
+        .start_pair
+        .checked_add(plan.repetitions)
+        .is_none_or(|n| n > 10000)
+    {
+        return Err(error("pair budget exceeds 10000"));
+    }
+    if plan.variants.len() > 14 || (!plan.variants.is_empty() && plan.baseline.is_none()) {
+        return Err(error(
+            "additional variants require baseline; at most 16 total variants",
+        ));
+    }
+    for name in plan.variants.keys() {
+        if name.is_empty()
+            || name == "baseline"
+            || name == "candidate"
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            return Err(error("invalid or reserved variant name"));
+        }
+    }
+    if !plan.variants.is_empty()
+        && (plan.repetitions as usize) % (2 * (plan.variants.len() + 2)) != 0
+    {
+        return Err(error("multi-variant repetitions must be a multiple of twice the variant count (balanced reversed rotations)"));
+    }
+    Ok(())
+}
+fn schedule(plan: &Plan) -> Vec<Entry> {
+    let mut schedule = vec![];
+    for pair in plan.start_pair..plan.start_pair + plan.repetitions {
+        let mut names = if plan.baseline.is_some() {
+            vec!["baseline".to_string(), "candidate".to_string()]
+        } else {
+            vec!["candidate".to_string()]
+        };
+        names.extend(plan.variants.keys().cloned());
+        if plan.variants.is_empty() {
+            if pair % 2 == 1 {
+                names.reverse();
+            }
+        } else {
+            let n = names.len();
+            names.rotate_left(pair as usize % n);
+            if (pair as usize / n) % 2 == 1 {
+                names.reverse();
+            }
+        }
+        for variant in names {
+            schedule.push(Entry {
+                process: schedule.len() as u32,
+                pair: plan.baseline.as_ref().map(|_| pair),
+                variant,
+            });
+        }
+    }
+    schedule
+}
+
+pub(crate) fn acquire_lease() -> Result<Lease> {
+    // Per-user lock coordinates local rbench processes across output directories.
+    let uid = std::env::var("USER")
+        .unwrap_or_else(|_| "default".into())
+        .replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+    let lock = std::env::temp_dir().join(format!("rbench-{uid}.lock"));
+    let mut lock_file=OpenOptions::new().write(true).create_new(true).open(&lock).map_err(|e|error(format!("cannot acquire {}: {e}; another runner may be active. Inspect stale lock before removing it",lock.display())))?;
+    use std::io::Write;
+    writeln!(lock_file, "pid={}", std::process::id())?;
+    Ok(Lease(lock))
 }

@@ -239,6 +239,7 @@ fn name_path(store: &Path, name: &str) -> Result<PathBuf> {
     Ok(store.join("baselines").join(format!("{name}.json")))
 }
 pub fn save_baseline(store: &Path, name: &str, run: &Path) -> Result<()> {
+    let _lease = crate::runner::acquire_lease()?;
     let r = Run::load(run)?;
     if r.status != Status::Complete {
         return Err(error("baseline requires complete run"));

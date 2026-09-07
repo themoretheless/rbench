@@ -205,6 +205,7 @@ fn init_discovery_preserves_manifest_and_refuses_overwrite() {
 }
 #[test]
 fn baseline_alias_checks_integrity_and_gate_exit_codes() {
+    let _guard = RUNNER_TEST.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let run = dir.path().join("run");
     let store = dir.path().join("store");
@@ -483,4 +484,118 @@ fn context_trend_and_ci_template() {
     let text = fs::read_to_string(ci).unwrap();
     assert!(text.contains("workflow_dispatch"));
     assert!(text.contains("include-hidden-files: true"));
+}
+
+#[cfg(unix)]
+#[test]
+fn privacy_multivariant_resume_and_retention() {
+    let _guard = RUNNER_TEST.lock().unwrap();
+    let t = tempfile::tempdir().unwrap();
+    let plan = t.path().join("plan.json");
+    let run = t.path().join("secret-run");
+    let secret = "RBENCH-sensitive-\"split\\secret-194812";
+    fs::write(&plan,serde_json::to_vec(&serde_json::json!({"candidate":{"path":"/bin/sh","args":["-c","printf '%s' \"$RBENCH_TEST_SECRET\"; printf '%s' \"$RBENCH_TEST_SECRET\" >&2; test -z \"$RBENCH_UNLISTED\""],"cwd":null},"repetitions":1,"privacy":{"allow_env":[],"secret_env":["RBENCH_TEST_SECRET"]}})).unwrap()).unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_cargo-rbench"))
+        .args([
+            "run",
+            "--plan",
+            plan.to_str().unwrap(),
+            "-o",
+            run.to_str().unwrap(),
+        ])
+        .env("RBENCH_TEST_SECRET", secret)
+        .env("RBENCH_UNLISTED", "must-not-inherit")
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    for p in [
+        run.join("plan.json"),
+        run.join("run.json"),
+        run.join("logs/0-candidate.stdout"),
+        run.join("logs/0-candidate.stderr"),
+    ] {
+        let data = fs::read_to_string(p).unwrap();
+        assert!(!data.contains("sensitive"));
+    }
+    assert_eq!(
+        fs::read_to_string(run.join("logs/0-candidate.stdout")).unwrap(),
+        "[REDACTED]"
+    );
+    let bundle = t.path().join("export.json");
+    assert!(cli(&[
+        "bundle",
+        run.to_str().unwrap(),
+        "-o",
+        bundle.to_str().unwrap()
+    ])
+    .status
+    .success());
+    assert!(!fs::read_to_string(bundle).unwrap().contains("sensitive"));
+    let multi = t.path().join("multi");
+    let p = serde_json::json!({"candidate":{"path":"/usr/bin/true","cwd":null},"baseline":{"path":"/usr/bin/true","cwd":null},"variants":{"third":{"path":"/usr/bin/true","cwd":null}},"repetitions":6});
+    fs::write(&plan, serde_json::to_vec(&p).unwrap()).unwrap();
+    let o = cli(&[
+        "run",
+        "--plan",
+        plan.to_str().unwrap(),
+        "-o",
+        multi.to_str().unwrap(),
+    ]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let schedule: serde_json::Value =
+        serde_json::from_slice(&fs::read(multi.join("schedule.json")).unwrap()).unwrap();
+    let mut positions = std::collections::BTreeMap::new();
+    for (i, e) in schedule.as_array().unwrap().iter().enumerate() {
+        *positions
+            .entry((e["variant"].as_str().unwrap(), i % 3))
+            .or_insert(0) += 1;
+    }
+    assert!(positions.values().all(|n| *n == 2));
+    // An interrupted whole-process workload can continue after an external stop condition clears.
+    let marker = t.path().join("continue");
+    let partial = t.path().join("partial");
+    let resumed = t.path().join("resumed");
+    let p = serde_json::json!({"candidate":{"path":"/bin/sh","args":["-c","test -f \"$1\"","--",marker],"cwd":null},"repetitions":2,"privacy":{"allow_env":[],"secret_env":[]}});
+    fs::write(&plan, serde_json::to_vec(&p).unwrap()).unwrap();
+    assert!(!cli(&[
+        "run",
+        "--plan",
+        plan.to_str().unwrap(),
+        "-o",
+        partial.to_str().unwrap()
+    ])
+    .status
+    .success());
+    let original = fs::read(partial.join("run.json")).unwrap();
+    fs::write(&marker, "").unwrap();
+    let o = cli(&[
+        "resume",
+        partial.to_str().unwrap(),
+        "-o",
+        resumed.to_str().unwrap(),
+    ]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(original, fs::read(partial.join("run.json")).unwrap());
+    let o = cli(&[
+        "--store",
+        t.path().to_str().unwrap(),
+        "baseline",
+        "save",
+        "protected",
+        multi.to_str().unwrap(),
+    ]);
+    assert!(o.status.success());
+    let o = cli(&[
+        "--store",
+        t.path().to_str().unwrap(),
+        "retention",
+        "--keep",
+        "0",
+        "--apply",
+    ]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(multi.exists());
+    assert!(partial.exists());
+    assert!(resumed.exists());
+    assert!(!run.exists());
 }

@@ -25,6 +25,9 @@ pub struct Request<'a> {
     pub args: Vec<String>,
 }
 pub fn run(r: Request<'_>) -> Result<()> {
+    run_with_alpha(r, 0.05)
+}
+pub fn run_with_alpha(r: Request<'_>, alpha: f64) -> Result<()> {
     if r.output.exists() {
         return Err(error("output already exists"));
     }
@@ -137,6 +140,9 @@ pub fn run(r: Request<'_>) -> Result<()> {
     )?;
     let run = runner::run(
         runner::Plan {
+            privacy: None,
+            variants: Default::default(),
+            start_pair: 0,
             candidate: program(1),
             baseline: Some(program(0)),
             repetitions: r.repetitions,
@@ -153,7 +159,7 @@ pub fn run(r: Request<'_>) -> Result<()> {
     )?;
     println!(
         "{}\nSaved {}",
-        rbench::report::comparison(&rbench::analysis::compare(&run, None, 5., 0.05)?),
+        rbench::report::comparison(&rbench::analysis::compare(&run, None, 5., alpha)?),
         out.join("run").display()
     );
     Ok(())

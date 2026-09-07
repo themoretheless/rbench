@@ -22,6 +22,12 @@ struct Options {
     record: bool,
     tolerance: u8,
     percent: f64,
+    gpu: bool,
+    cold: bool,
+    width: u32,
+    height: u32,
+    dpi: f32,
+    backend: wgpu::Backends,
 }
 fn main() -> Result<()> {
     let mut o = Options {
@@ -30,6 +36,12 @@ fn main() -> Result<()> {
         record: false,
         tolerance: 0,
         percent: 0.,
+        gpu: false,
+        cold: false,
+        width: 800,
+        height: 400,
+        dpi: 2.,
+        backend: wgpu::Backends::all(),
     };
     let mut args = std::env::args().skip(1);
     let mut list = false;
@@ -37,6 +49,30 @@ fn main() -> Result<()> {
         match a.as_str() {
             "--list" => list = true,
             "--json" => {}
+            "--gpu-timestamps" => o.gpu = true,
+            "--cold" => o.cold = true,
+            "--width" => {
+                o.width = args
+                    .next()
+                    .ok_or_else(|| error("width required"))?
+                    .parse()?
+            }
+            "--height" => {
+                o.height = args
+                    .next()
+                    .ok_or_else(|| error("height required"))?
+                    .parse()?
+            }
+            "--dpi" => o.dpi = args.next().ok_or_else(|| error("dpi required"))?.parse()?,
+            "--backend" => {
+                o.backend = match args.next().as_deref() {
+                    Some("metal") => wgpu::Backends::METAL,
+                    Some("vulkan") => wgpu::Backends::VULKAN,
+                    Some("gl") => wgpu::Backends::GL,
+                    Some("dx12") => wgpu::Backends::DX12,
+                    _ => return Err(error("backend must be metal/vulkan/gl/dx12")),
+                }
+            }
             "--filter" => o.filter = args.next().ok_or_else(|| error("filter required"))?,
             "--goldens" => {
                 o.goldens = args
@@ -64,7 +100,7 @@ fn main() -> Result<()> {
                     .parse()?
             }
             "--help" => {
-                println!("--list --filter TEXT --record-goldens NEW_DIR | --goldens DIR [--channel-tolerance 0..255 --max-changed-percent 0..100] --json\nGoldens are required. Recording creates reference images only; inspect PNGs before using them. image is unsupported by this native renderer.");
+                println!("--gpu-timestamps | --cold --filter static|text; --width 16..4096 --height 16..4096 --dpi 0.5..4 --backend metal|vulkan|gl|dx12; --list --filter TEXT --record-goldens NEW_DIR | --goldens DIR [--channel-tolerance 0..255 --max-changed-percent 0..100] --json\nGoldens are required. Recording creates reference images only; inspect PNGs before using them. image is unsupported by this native renderer.");
                 return Ok(());
             }
             _ => return Err(error(format!("unknown argument {a}"))),
@@ -82,6 +118,13 @@ fn main() -> Result<()> {
             );
         }
         return Ok(());
+    }
+    if !(16..=4096).contains(&o.width)
+        || !(16..=4096).contains(&o.height)
+        || !o.dpi.is_finite()
+        || !(0.5..=4.).contains(&o.dpi)
+    {
+        return Err(error("viewport 16..4096 and DPI 0.5..4 required"));
     }
     if !o.percent.is_finite() || !(0.0..=100.0).contains(&o.percent) {
         return Err(error("percentage must be 0..100"));
@@ -131,8 +174,9 @@ struct Surface {
     view: wgpu::TextureView,
     w: u32,
     h: u32,
+    dpi: f32,
 }
-fn surface(r: &forma_vector::gpu::Renderer, w: u32, h: u32) -> Surface {
+fn surface(r: &forma_vector::gpu::Renderer, w: u32, h: u32, dpi: f32) -> Surface {
     let texture = r.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("rbench-golden-target"),
         size: wgpu::Extent3d {
@@ -153,10 +197,11 @@ fn surface(r: &forma_vector::gpu::Renderer, w: u32, h: u32) -> Surface {
         view,
         w,
         h,
+        dpi,
     }
 }
 fn draw(r: &mut forma_vector::gpu::Renderer, m: &forma_vector::Button, s: &Surface) -> Result<()> {
-    r.draw(m, &s.view, s.w, s.h, 2., true, true)
+    r.draw(m, &s.view, s.w, s.h, s.dpi, true, true)
         .map_err(error)?;
     Ok(())
 }
@@ -217,7 +262,12 @@ fn golden(
     image: &RgbaImage,
     record: bool,
 ) -> Result<String> {
-    let path = o.goldens.join(format!("{name}-{frame}.rbimg"));
+    let key = if o.width == 800 && o.height == 400 && o.dpi == 2. {
+        name.to_string()
+    } else {
+        format!("{name}-{}x{}-dpi{}", o.width, o.height, o.dpi)
+    };
+    let path = o.goldens.join(format!("{key}-{frame}.rbimg"));
     if record {
         image.save_new(&path)?;
         let f = std::fs::OpenOptions::new()
@@ -254,7 +304,7 @@ fn metrics() -> Vec<Metric> {
         statistic: "96-frame phase total".into(),
         direction: Direction::Lower,
     };
-    vec![
+    let mut result = vec![
         Metric::duration(
             "cpu.submit",
             "scenario update + CPU encode and submit wall",
@@ -270,11 +320,105 @@ fn metrics() -> Vec<Metric> {
             "whole-process Rust allocator; native/driver excluded",
         ),
         phase("geometry.uploads", "Forma renderer geometry"),
-    ]
+    ];
+    for (id,unit,scope) in [
+        ("renderer.frames","calls","Forma successful draw frames; one render pass per frame in this snapshot"),
+        ("renderer.uploaded_bytes","bytes","Forma application payload writes and initialized buffers; excludes driver traffic"),
+        ("renderer.tile_uploads","calls","Forma tile upload counter"),
+        ("renderer.buffer_allocations","calls","Forma application buffer creations"),
+        ("renderer.bind_groups","calls","Forma bind group creations"),
+        ("alloc.phase_peak","bytes","whole-process peak Rust live bytes during phase; caller quiescence required at boundaries"),
+        ("alloc.live_end","bytes","whole-process Rust live bytes at phase end"),
+    ] {let mut m=phase(id,scope);m.unit=unit.into();result.push(m);}
+    result.push(phase(
+        "renderer.draw_calls",
+        "one pass.draw per successful Renderer frame in Forma snapshot e2ef5f7",
+    ));
+    result.push(phase(
+        "geometry.rebuilds",
+        "native display-list rebuild count; unavailable without a source counter",
+    ));
+    result.push(phase(
+        "cache.hits",
+        "native display-list cache hits; unavailable without a source counter",
+    ));
+    result
+}
+fn gpu_sample(
+    recorder: &mut Recorder,
+    id: &str,
+    sample: std::result::Result<Option<f64>, String>,
+) -> Result<()> {
+    match sample {
+        Ok(Some(ns)) if ns.is_finite() && ns > 0. && ns.round() > 0. => {
+            recorder.observe(id, "gpu.duration", ns.round() as u128)
+        }
+        Ok(_) => recorder.unavailable(
+            id,
+            "gpu.duration",
+            Availability::Invalid("missing, sub-nanosecond or invalid timestamp pair".into()),
+        ),
+        Err(e) => recorder.unavailable(id, "gpu.duration", Availability::Invalid(e)),
+    }
 }
 async fn run(o: Options) -> Result<()> {
-    let instance = wgpu::Instance::default();
-    let adapter = instance.request_adapter(&Default::default()).await?;
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: o.backend,
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+    let adapter = match instance.request_adapter(&Default::default()).await {
+        Ok(a) => a,
+        Err(e) => {
+            if o.record {
+                return Err(e.into());
+            }
+            let mut r = Recorder::new();
+            let id = format!(
+                "forma/backend/{:?}/{}x{}/{}",
+                o.backend, o.width, o.height, o.dpi
+            );
+            r.case(Case {
+                id: id.clone(),
+                contract: BTreeMap::from([("backend".into(), format!("{:?}", o.backend))]),
+                metrics: metrics(),
+            })?;
+            for m in metrics() {
+                r.unavailable(
+                    &id,
+                    &m.id,
+                    Availability::Unsupported(format!("adapter unavailable: {e}")),
+                )?;
+            }
+            println!("RBENCH_RESULT={}", serde_json::to_string(&r.finish()?)?);
+            return Ok(());
+        }
+    };
+    if o.cold {
+        if o.record || o.gpu || !matches!(o.filter.as_str(), "static" | "text") {
+            return Err(error(
+                "cold requires --filter static|text, existing goldens and no GPU replay",
+            ));
+        }
+        let src = source(&o.filter);
+        let start = Instant::now();
+        let model = forma_vector::Button::from_sources(&src, forma_vector::BUTTON_COMPONENT)
+            .map_err(error)?;
+        let mut renderer =
+            forma_vector::gpu::Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm)
+                .await
+                .map_err(error)?;
+        let target = surface(&renderer, o.width, o.height, o.dpi);
+        draw(&mut renderer, &model, &target)?;
+        renderer.device.poll(wgpu::PollType::wait_indefinitely())?;
+        let elapsed = start.elapsed().as_nanos();
+        let golden_hash = golden(&o, &o.filter, 0, &pixels(&renderer, &target)?, false)?;
+        let mut r = Recorder::new();
+        let id = format!("forma/{}/cold", o.filter);
+        r.case(Case{id:id.clone(),contract:BTreeMap::from([("temperature".into(),"first model parse + renderer/pipeline construction + target allocation + completed frame; adapter discovery excluded; no earlier draw in worker; external driver/OS caches uncontrolled".into()),("adapter".into(),format!("{:?}",adapter.get_info())),("viewport".into(),format!("{}x{}",o.width,o.height)),("dpi".into(),o.dpi.to_string()),("golden.sha256".into(),golden_hash),("fixture.sha256".into(),format!("{:x}",Sha256::digest(format!("{src}\n{}",forma_vector::BUTTON_COMPONENT))))]),metrics:vec![Metric::duration("first.completed","model + renderer + resources + first completed offscreen draw; post-validation excluded","first frame including initialization")]})?;
+        r.observe(&id, "first.completed", elapsed)?;
+        println!("RBENCH_RESULT={}", serde_json::to_string(&r.finish()?)?);
+        return Ok(());
+    }
     let mut recorder = Recorder::new();
     for name in SCENARIOS.into_iter().filter(|s| s.contains(&o.filter)) {
         let id = format!("forma/{name}");
@@ -313,8 +457,8 @@ async fn run(o: Options) -> Result<()> {
                 forma_vector::gpu::Renderer::new(&adapter, wgpu::TextureFormat::Rgba8Unorm)
                     .await
                     .map_err(error)?;
-            let large = surface(&renderer, 800, 400);
-            let small = surface(&renderer, 640, 320);
+            let large = surface(&renderer, o.width, o.height, o.dpi);
+            let small = surface(&renderer, o.width * 4 / 5, o.height * 4 / 5, o.dpi);
             for _ in 0..20 {
                 draw(&mut renderer, &model, &large)?;
                 renderer.device.poll(wgpu::PollType::wait_indefinitely())?;
@@ -325,7 +469,10 @@ async fn run(o: Options) -> Result<()> {
             if pass == 1 {
                 eprintln!("rbench: {id} — measuring {N} frames");
             }
+            let resources_before = renderer.resource_stats();
+            let frames_before = renderer.frames;
             let before = ALLOC.snapshot();
+            let allocation_phase = ALLOC.begin_phase()?;
             for i in 0..N {
                 let start = Instant::now();
                 let (w, _) = state(&mut model, name, i);
@@ -339,7 +486,9 @@ async fn run(o: Options) -> Result<()> {
                     hashes.insert(format!("golden.{i}"), hash);
                 }
             }
+            let allocation_phase = allocation_phase.finish();
             let after = ALLOC.snapshot();
+            let resources_after = renderer.resource_stats();
             if pass == 1 {
                 let final_surface = if name == "resize" { &small } else { &large };
                 let final_hash =
@@ -364,13 +513,18 @@ async fn run(o: Options) -> Result<()> {
                     (
                         "viewport".into(),
                         if name == "resize" {
-                            "alternating 800x400/640x320; preallocated targets"
+                            format!(
+                                "alternating {}x{}/{}x{}; preallocated targets",
+                                o.width,
+                                o.height,
+                                o.width * 4 / 5,
+                                o.height * 4 / 5
+                            )
                         } else {
-                            "800x400"
-                        }
-                        .into(),
+                            format!("{}x{}", o.width, o.height)
+                        },
                     ),
-                    ("dpi".into(), "2".into()),
+                    ("dpi".into(), o.dpi.to_string()),
                     ("frames".into(), N.to_string()),
                     ("warmup".into(), "20 static frames".into()),
                     (
@@ -406,9 +560,96 @@ async fn run(o: Options) -> Result<()> {
                 )?;
                 recorder.observe(
                     &id,
+                    "renderer.draw_calls",
+                    (renderer.frames - frames_before) as u128,
+                )?;
+                for metric in ["geometry.rebuilds", "cache.hits"] {
+                    recorder.unavailable(&id,metric,Availability::Unsupported("Forma snapshot exposes no native display-list counter; uploads and elapsed time are not substitutes".into()))?;
+                }
+                for (metric, value) in [
+                    ("renderer.frames", renderer.frames - frames_before),
+                    (
+                        "renderer.uploaded_bytes",
+                        resources_after.uploaded_bytes_total
+                            - resources_before.uploaded_bytes_total,
+                    ),
+                    (
+                        "renderer.tile_uploads",
+                        resources_after.tile_uploads_total - resources_before.tile_uploads_total,
+                    ),
+                    (
+                        "renderer.buffer_allocations",
+                        resources_after.buffer_allocations_total
+                            - resources_before.buffer_allocations_total,
+                    ),
+                    (
+                        "renderer.bind_groups",
+                        resources_after.bind_group_creations_total
+                            - resources_before.bind_group_creations_total,
+                    ),
+                    ("alloc.phase_peak", allocation_phase.peak_live_bytes),
+                    ("alloc.live_end", allocation_phase.live_end_bytes),
+                ] {
+                    recorder.observe(&id, metric, value as u128)?;
+                }
+                recorder.observe(
+                    &id,
                     "geometry.uploads",
                     u128::from(renderer.uploads - uploads),
                 )?;
+            }
+        }
+    }
+    // GPU query instrumentation lives in a separate replay, after normal measurement.
+    if o.gpu && !o.record {
+        for name in SCENARIOS
+            .into_iter()
+            .filter(|s| *s != "image" && s.contains(&o.filter))
+        {
+            let src = source(name);
+            let mut model =
+                forma_vector::Button::from_sources(&src, forma_vector::BUTTON_COMPONENT)
+                    .map_err(error)?;
+            let mut renderer = forma_vector::gpu::Renderer::new_profiled(
+                &adapter,
+                wgpu::TextureFormat::Rgba8Unorm,
+            )
+            .await
+            .map_err(error)?;
+            let id = format!("forma/{name}/gpu");
+            let mut metric = Metric::duration(
+                "gpu.duration",
+                "GPU render pass timestamps; separate instrumented replay; readback excluded",
+                "individual frame",
+            );
+            metric.phase = "gpu-instrumented-replay".into();
+            recorder.case(Case{id:id.clone(),contract:BTreeMap::from([
+                ("adapter".into(),format!("{:?}",adapter.get_info())),("viewport".into(),format!("{}x{}",o.width,o.height)),("dpi".into(),o.dpi.to_string()),("scenario".into(),name.into()),("fixture.sha256".into(),format!("{:x}",Sha256::digest(format!("{src}\n{}",forma_vector::BUTTON_COMPONENT)))),("instrumentation".into(),"timestamps; immediate serial query read after each draw; no normal timing comparison".into())]),metrics:vec![metric]})?;
+            if !renderer.gpu_timestamps_enabled() {
+                recorder.unavailable(
+                    &id,
+                    "gpu.duration",
+                    Availability::Unsupported("adapter lacks TIMESTAMP_QUERY".into()),
+                )?;
+                continue;
+            }
+            let large = surface(&renderer, o.width, o.height, o.dpi);
+            let small = surface(&renderer, o.width * 4 / 5, o.height * 4 / 5, o.dpi);
+            for _ in 0..20 {
+                draw(&mut renderer, &model, &large)?;
+                let _ = renderer.read_gpu_duration_ns().map_err(error)?;
+            }
+            for i in 0..N {
+                let (w, _) = state(&mut model, name, i);
+                let s = if w == 800 { &large } else { &small };
+                draw(&mut renderer, &model, s)?;
+                gpu_sample(&mut recorder, &id, renderer.read_gpu_duration_ns())?;
+                if renderer.read_gpu_duration_ns().map_err(error)?.is_some() {
+                    return Err(error("GPU query consumed more than once"));
+                }
+                if i == 0 || i == N - 1 {
+                    golden(&o, name, i, &pixels(&renderer, s)?, false)?;
+                }
             }
         }
     }
@@ -429,4 +670,33 @@ async fn run(o: Options) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn invalid_query_results_are_never_zero_durations() {
+        let mut r = Recorder::new();
+        r.case(Case {
+            id: "gpu".into(),
+            contract: BTreeMap::new(),
+            metrics: vec![Metric::duration("gpu.duration", "test", "individual frame")],
+        })
+        .unwrap();
+        for sample in [
+            Ok(None),
+            Ok(Some(f64::NAN)),
+            Ok(Some(0.)),
+            Err("query readback failed".into()),
+            Ok(Some(123.)),
+        ] {
+            gpu_sample(&mut r, "gpu", sample).unwrap();
+        }
+        let r = r.finish().unwrap();
+        assert!(r.observations[..4]
+            .iter()
+            .all(|o| o.value.is_none() && matches!(o.availability, Availability::Invalid(_))));
+        assert_eq!(r.observations[4].value.as_deref(), Some("123"));
+    }
 }

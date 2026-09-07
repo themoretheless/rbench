@@ -47,6 +47,7 @@ struct Entry<'a> {
     case: Case,
     work: Work<'a>,
     max_batch: u64,
+    executed: bool,
     verify: Option<Box<dyn FnMut() -> Result<()> + 'a>>,
 }
 /// Registration is lazy: `--list` never runs workloads.
@@ -219,6 +220,7 @@ impl<'a> Suite<'a> {
             },
             work,
             max_batch,
+            executed: false,
             verify: None,
         });
     }
@@ -228,6 +230,45 @@ impl<'a> Suite<'a> {
             e.case
                 .contract
                 .insert(format!("param.{key}"), value.to_string());
+        }
+        self
+    }
+    /// Executor construction happens at the call site. Future creation, polling and output Drop are timed.
+    pub fn bench_async<E, F, O>(
+        &mut self,
+        name: &str,
+        mut executor: E,
+        mut future: impl FnMut() -> F + 'a,
+    ) -> &mut Self
+    where
+        E: crate::workloads::Executor + 'a,
+        F: std::future::Future<Output = O> + 'a,
+        O: 'a,
+    {
+        self.bench(name, move || executor.block_on(future()));
+        self.entries.last_mut().unwrap().case.contract.insert(
+            "async.scope".into(),
+            "future creation + executor block_on + output drop; executor construction excluded"
+                .into(),
+        );
+        self
+    }
+    /// First invocation only: select exactly one unchecked case in a fresh worker process.
+    /// No cache flushing is implied; external OS/driver caches remain uncontrolled.
+    pub fn cold(&mut self) -> &mut Self {
+        if let Some(e) = self.entries.last_mut() {
+            e.case.contract.insert(
+                "temperature".into(),
+                "cold; first invocation only; no pilot/warmup; external caches uncontrolled".into(),
+            );
+        }
+        self
+    }
+    pub fn warm(&mut self) -> &mut Self {
+        if let Some(e) = self.entries.last_mut() {
+            e.case
+                .contract
+                .insert("temperature".into(), "warm; calibrated and warmed".into());
         }
         self
     }
@@ -319,6 +360,20 @@ impl<'a> Suite<'a> {
                 ));
             }
         }
+        let selected: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|e| selection.matches(&e.case))
+            .collect();
+        if selected.iter().any(|e| {
+            e.case
+                .contract
+                .get("temperature")
+                .is_some_and(|v| v.starts_with("cold;"))
+        }) && (selected.len() != 1 || selected[0].verify.is_some())
+        {
+            return Err(error("cold mode requires exactly one unchecked case; verify correctness in a separate process"));
+        }
         let mut run = Run::new();
         run.provenance
             .insert("rbench_version".into(), env!("CARGO_PKG_VERSION").into());
@@ -336,13 +391,36 @@ impl<'a> Suite<'a> {
             if run.cases.iter().any(|c: &Case| c.id == e.case.id) {
                 return Err(error("duplicate benchmark ID"));
             }
+            let cold = e
+                .case
+                .contract
+                .get("temperature")
+                .is_some_and(|v| v.starts_with("cold;"));
+            if cold && e.executed {
+                return Err(error("cold case already executed; launch a fresh worker"));
+            }
+            e.executed = true;
+            let samples = if cold { 1 } else { self.config.samples };
+            e.case
+                .contract
+                .insert("samples".into(), samples.to_string());
             e.case.contract.insert(
                 "warmup_ns".into(),
-                self.config.warmup.as_nanos().to_string(),
+                (if cold {
+                    0
+                } else {
+                    self.config.warmup.as_nanos()
+                })
+                .to_string(),
             );
             e.case.contract.insert(
                 "sample_target_ns".into(),
-                self.config.sample_time.as_nanos().to_string(),
+                (if cold {
+                    0
+                } else {
+                    self.config.sample_time.as_nanos()
+                })
+                .to_string(),
             );
             eprintln!("rbench: {} — validating and calibrating", e.case.id);
             if let Some(check) = &mut e.verify {
@@ -350,24 +428,23 @@ impl<'a> Suite<'a> {
             }
             let cap = e.max_batch.min(self.config.max_iterations);
             let mut n = 1;
-            loop {
-                let elapsed = (e.work)(n);
-                if elapsed >= self.config.sample_time.as_nanos() || n >= cap {
-                    break;
+            if !cold {
+                loop {
+                    let elapsed = (e.work)(n);
+                    if elapsed >= self.config.sample_time.as_nanos() || n >= cap {
+                        break;
+                    }
+                    n = (n * 2).min(cap);
                 }
-                n = (n * 2).min(cap);
             }
             let start = Instant::now();
-            while start.elapsed() < self.config.warmup {
+            while !cold && start.elapsed() < self.config.warmup {
                 (e.work)(n);
             }
-            eprintln!(
-                "rbench: {} — measuring {} samples",
-                e.case.id, self.config.samples
-            );
+            eprintln!("rbench: {} — measuring {} samples", e.case.id, samples);
             run.cases.push(e.case.clone());
             let mut under_target = false;
-            for sequence in 0..self.config.samples {
+            for sequence in 0..samples {
                 let elapsed = (e.work)(n);
                 under_target |= elapsed < self.config.sample_time.as_nanos() / 2;
                 run.observations.push(Observation {
@@ -385,7 +462,7 @@ impl<'a> Suite<'a> {
             if let Some(check) = &mut e.verify {
                 check().map_err(|err| error(format!("{} post-validation: {err}", e.case.id)))?;
             }
-            if under_target {
+            if under_target && !cold {
                 run.notes.push(format!("{}: some samples below half the requested duration; iteration cap or workload drift may limit precision",e.case.id));
             }
         }

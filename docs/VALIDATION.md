@@ -67,3 +67,17 @@ Forma: медиана наблюдений CPU submit 41 µs, completed 1.302521
 - Эффект instrumentation, overhead относительно handwritten/Criterion/Divan и статистическая устойчивость при систематическом дрейфе ещё требуют отдельных экспериментов.
 
 Расширенные критерии остаются в [ROADMAP.md](ROADMAP.md). Архитектурные документы описывают также будущие возможности; для состояния реализации используйте README и этот файл.
+
+## Final twenty — 2026-09-07
+
+All 50 workspace tests/doctests and the Forma GPU-negative-result test passed. Strict all-target/all-feature Clippy passed in the core and standalone Forma workspaces. Build/check evidence uses the installed nightly toolchain, not an independent MSRV run.
+
+New real Metal validation: 1,152 normal frames plus 1,152 GPU timestamp samples across six scenarios and two processes; final smoke added 576 of each with the final counter contracts. Real winit surface: exactly 96 measured frames, resize/occlusion observed, automatic exit verified. A queued extra redraw during shutdown was found and fixed. Cold text: two new workers, first completed frame with model/renderer/resource initialization and post-golden validation. Matrix: four Metal viewport/DPI combinations passed separate checked goldens; four DX12 combinations explicitly Unsupported. Reference PNGs were visually inspected, including expected clipping at 640 physical pixels / DPI 2.
+
+Known 1 ms → 3 ms sleep regression was found in isolated committed snapshots with 12 independent pairs. A separate **synthetic protocol** 100 → 200 → 100 Git fixture produced `nonmonotonic` with no culprit. The search audits a bounded first-parent range rather than assuming monotonicity. PR Markdown was generated locally; no comment was sent.
+
+Privacy tests cover streamed split literals, escaped secrets, allowlisted inheritance, metadata/log/bundle non-disclosure and bounded shutdown when an inherited log pipe stays open. Resume preserves the parent artifact; retention protects baselines and linked sessions and only quarantines eligible owned directories. Profiler replay was verified with `/usr/bin/time -l`; the initial sandbox-denied sysctl attempt remained Failed, then an authorized host run passed.
+
+Instrumentation cost was measured in a balanced system/tracked/phase A/B/C experiment (36 processes, 8 samples each). Both corrected comparisons were Inconclusive at the 5% practical margin; no zero-overhead or universal coefficient claim is made. Pilot simulation uses independent confirmation data, 2,000 fixed-seed experiments; the budget extrapolation remains a heuristic, not a power guarantee.
+
+Local artifact paths and detailed feature contracts are in [FINAL20.md](FINAL20.md). Checksums are recorded in ignored `.rbench/final20-evidence.json`. Raw artifacts are intentionally not committed. Window image goldens, compositor scanout/drop counts, non-Metal GPU success paths, actual query-device-failure recovery, remote CI execution and new browser visual validation are **not** established by these checks.

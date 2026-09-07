@@ -62,7 +62,7 @@ pub fn history(store: &Path) -> Result<Vec<History>> {
             if e.file_type()?.is_dir()
                 && !matches!(
                     e.file_name().to_str(),
-                    Some("target" | ".git" | "baselines" | "notes" | "checkouts")
+                    Some("target" | ".git" | "baselines" | "notes" | "checkouts" | "quarantine")
                 )
             {
                 walk(&e.path(), depth + 1, visited, rows)?;
