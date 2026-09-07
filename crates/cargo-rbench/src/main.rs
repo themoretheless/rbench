@@ -8,6 +8,7 @@ mod project;
 mod revisions;
 mod runner;
 mod sessions;
+mod web_ui;
 use clap::{Parser, Subcommand};
 use rbench::{analysis, report, *};
 use std::{fs::OpenOptions, io::Write, path::PathBuf, process::Command};
@@ -26,6 +27,13 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Action {
+    /// Browse saved experiments in a local web interface.
+    Serve {
+        #[arg(default_value = ".rbench")]
+        root: PathBuf,
+        #[arg(long, default_value_t = 8787)]
+        port: u16,
+    },
     /// Execute a Cartesian matrix of explicit worker CLI arguments, sequentially.
     Matrix {
         #[arg(long)]
@@ -602,6 +610,7 @@ fn execute() -> Result<i32> {
                 out.display()
             );
         }
+        Action::Serve {root,port} => web_ui::serve(&root, &cli.store, port)?,
         Action::Report {run,baseline,title,threshold,alpha,output:path} => {
             let doc=experiment_report::build(experiment_report::Options{source:&run,baseline:baseline.as_deref(),store:&cli.store,title:&title,threshold,alpha})?;
             let text=match path.as_ref().and_then(|p|p.extension()).and_then(|e|e.to_str()){

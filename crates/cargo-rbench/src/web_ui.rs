@@ -1,0 +1,155 @@
+use crate::experiment_report::{self, Options};
+use rbench::{error, Result};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::hash_map::RandomState,
+    hash::BuildHasher,
+    io::{Read, Write},
+    net::{TcpListener, TcpStream},
+    path::Path,
+    time::{Duration, SystemTime},
+};
+
+fn response(stream: &mut TcpStream, status: &str, mime: &str, body: &str) -> std::io::Result<()> {
+    write!(stream, "HTTP/1.1 {status}\r\nContent-Type: {mime}; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nX-Frame-Options: SAMEORIGIN\r\nConnection: close\r\n\r\n{body}", body.len())
+}
+fn identity(label: &str) -> String {
+    format!("{:x}", Sha256::digest(label.as_bytes()))
+}
+fn render(root: &Path, store: &Path, query: &str) -> Result<(String, String)> {
+    let mut id = None;
+    let mut baseline = None;
+    let mut format = "html";
+    let mut threshold = 5.0;
+    for pair in query.split('&').filter(|s| !s.is_empty()) {
+        let (key, value) = pair.split_once('=').ok_or_else(|| error("invalid query"))?;
+        match key {
+            "id" => id = Some(value),
+            "baseline" if !value.is_empty() => baseline = Some(value),
+            "baseline" => (),
+            "format" => format = value,
+            "threshold" => threshold = value.parse::<f64>()?,
+            _ => return Err(error("unknown parameter")),
+        }
+    }
+    let runs = experiment_report::files(root)?;
+    let source = match id {
+        Some(i) => runs
+            .iter()
+            .find(|r| identity(&r.0) == i)
+            .ok_or_else(|| error("unknown run"))?
+            .1
+            .parent()
+            .unwrap(),
+        None => root,
+    };
+    let base = baseline
+        .map(|i| {
+            runs.iter()
+                .find(|r| identity(&r.0) == i)
+                .map(|r| r.1.parent().unwrap())
+                .ok_or_else(|| error("unknown baseline"))
+        })
+        .transpose()?;
+    let doc = experiment_report::build(Options {
+        source,
+        baseline: base,
+        store,
+        title: "Benchmark report",
+        threshold,
+        alpha: 0.05,
+    })?;
+    match format {
+        "html" => Ok(("text/html".into(), doc.html()?)),
+        "json" => Ok((
+            "application/json".into(),
+            serde_json::to_string_pretty(&doc)?,
+        )),
+        "md" => Ok(("text/markdown".into(), doc.markdown()?)),
+        _ => Err(error("unknown format")),
+    }
+}
+fn route(root: &Path, store: &Path, path: &str) -> Result<(String, String)> {
+    match path {
+        "" | "index.html" => Ok(("text/html".into(), include_str!("web-ui.html").into())),
+        "api/runs" => {
+            let rows: Vec<_>=experiment_report::files(root)?.iter().map(|(label,path)|serde_json::json!({"id":identity(label),"label":label,"available":path.is_file()})).collect();
+            Ok(("application/json".into(), serde_json::to_string(&rows)?))
+        }
+        _ if path.starts_with("report?") => render(root, store, &path[7..]),
+        _ => Err(error("unknown route")),
+    }
+}
+pub fn serve(root: &Path, store: &Path, port: u16) -> Result<()> {
+    // No worker processes need graceful artifact finalization in this read-only server.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGINT, libc::SIG_DFL);
+        libc::signal(libc::SIGTERM, libc::SIG_DFL);
+    }
+    let root = root.canonicalize()?;
+    if !root.is_dir() {
+        return Err(error("serve requires an experiment directory"));
+    }
+    let listener = TcpListener::bind(("127.0.0.1", port))?;
+    let token = format!(
+        "{:016x}{:016x}",
+        RandomState::new().hash_one(SystemTime::now()),
+        RandomState::new().hash_one(std::process::id())
+    );
+    let prefix = format!("/{token}/");
+    println!(
+        "Report interface: http://{}/{token}/",
+        listener.local_addr()?
+    );
+    for connection in listener.incoming() {
+        let mut stream = connection?;
+        stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+        let mut request = Vec::new();
+        let mut byte = [0; 1];
+        while request.len() < 8192 && !request.ends_with(b"\r\n\r\n") {
+            match stream.read(&mut byte) {
+                Ok(1) => request.push(byte[0]),
+                _ => break,
+            }
+        }
+        let text = String::from_utf8_lossy(&request);
+        let parts: Vec<_> = text
+            .lines()
+            .next()
+            .unwrap_or("")
+            .split_whitespace()
+            .collect();
+        if !request.ends_with(b"\r\n\r\n")
+            || parts.len() != 3
+            || parts[0] != "GET"
+            || !parts[1].starts_with(&prefix)
+        {
+            let _ = response(&mut stream, "404 Not Found", "text/plain", "Not found");
+            continue;
+        }
+        match route(&root, store, &parts[1][prefix.len()..]) {
+            Ok((mime, body)) => {
+                let _ = response(&mut stream, "200 OK", &mime, &body);
+            }
+            Err(e) => {
+                let _ = response(&mut stream, "400 Bad Request", "text/plain", &e.to_string());
+            }
+        }
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn routes_reject_paths_and_invalid_selections() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(route(dir.path(), dir.path(), "../../Cargo.toml").is_err());
+        assert!(render(dir.path(), dir.path(), "id=../../secret").is_err());
+        assert!(render(dir.path(), dir.path(), "path=/etc/passwd").is_err());
+        let (_, page) = route(dir.path(), dir.path(), "").unwrap();
+        assert!(page.contains("iframe"));
+    }
+}

@@ -49,7 +49,7 @@ pub struct Options<'a> {
     pub threshold: f64,
     pub alpha: f64,
 }
-fn files(root: &Path) -> Result<Vec<(String, PathBuf)>> {
+pub(crate) fn files(root: &Path) -> Result<Vec<(String, PathBuf)>> {
     if root.is_file() {
         return Ok(vec![(
             root.file_name().unwrap().to_string_lossy().into(),

@@ -23,7 +23,7 @@ cargo rbench report .rbench/sort -o .rbench/sort.html
 
 `--offline` подходит при наличии зависимостей в Cargo cache; при первой сборке его можно убрать. Alias `cargo rbench` настроен в этом workspace. Для других проектов: `cargo install --path crates/cargo-rbench --offline`.
 
-Сводные отчёты по папке экспериментов: HTML с фильтрами и графиками, Markdown и JSON. [Построение отчётов](docs/REPORTS.md).
+Веб-интерфейс: `cargo rbench serve .rbench`. Сводные отчёты по папке экспериментов: HTML с фильтрами и графиками, Markdown и JSON. [Построение отчётов](docs/REPORTS.md).
 
 ## API библиотеки
 
