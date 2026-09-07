@@ -62,6 +62,20 @@ static CANCELLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 extern "C" fn cancel(_: libc::c_int) {
     CANCELLED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
+pub fn cancelled() -> bool {
+    CANCELLED.load(std::sync::atomic::Ordering::Relaxed)
+}
+fn progress(out: &Path, completed: usize, total: usize, variant: &str) -> Result<()> {
+    let temp = out.join("progress.next.json");
+    fs::write(
+        &temp,
+        serde_json::to_vec(
+            &serde_json::json!({"state":"running","completed":completed,"total":total,"variant":variant}),
+        )?,
+    )?;
+    fs::rename(temp, out.join("progress.json"))?;
+    Ok(())
+}
 pub fn install_cancel_handler() {
     #[cfg(unix)]
     unsafe {
@@ -202,6 +216,7 @@ pub fn run(mut plan: Plan, out: &Path) -> Result<Run> {
         &serde_json::json!({"state":"running"}),
     )?;
     let total_processes = schedule.len();
+    progress(out, 0, total_processes, "")?;
     let experiment_start = Instant::now();
     let mut execution = (|| -> Result<()> {
         for e in schedule {
@@ -257,6 +272,7 @@ pub fn run(mut plan: Plan, out: &Path) -> Result<Run> {
                 e.variant,
                 eta
             );
+            progress(out, completed, total_processes, &e.variant)?;
             let start = Instant::now();
             let mut heartbeat = Instant::now();
             // Declare capture before child: error unwinding kills the process group before joining pipes.
@@ -442,7 +458,7 @@ pub fn run(mut plan: Plan, out: &Path) -> Result<Run> {
                 result.observations.push(Observation {
                     case: "process".into(),
                     metric: "wall".into(),
-                    variant: e.variant,
+                    variant: e.variant.clone(),
                     process: e.process,
                     pair: e.pair,
                     sequence: 0,
@@ -456,6 +472,7 @@ pub fn run(mut plan: Plan, out: &Path) -> Result<Run> {
                 &out.join(format!("partial-{}.json", e.process)),
                 &serde_json::json!({"process": e.process,"observations": &result.observations[observation_start..]}),
             )?;
+            progress(out, e.process as usize + 1, total_processes, &e.variant)?;
         }
         Ok(())
     })();

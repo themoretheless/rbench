@@ -11,7 +11,12 @@ mod sessions;
 mod web_ui;
 use clap::{Parser, Subcommand};
 use rbench::{analysis, report, *};
-use std::{fs::OpenOptions, io::Write, path::PathBuf, process::Command};
+use std::{
+    fs::OpenOptions,
+    io::{IsTerminal, Write},
+    path::PathBuf,
+    process::Command,
+};
 #[derive(Parser)]
 #[command(
     name = "cargo rbench",
@@ -273,6 +278,15 @@ enum Action {
         protocol: bool,
         #[arg(long)]
         dry_run: bool,
+        /// Start and open the live interface even without an interactive terminal.
+        #[arg(long, conflicts_with = "no_ui")]
+        ui: bool,
+        /// Disable the automatic interface (CI/headless runs).
+        #[arg(long)]
+        no_ui: bool,
+        /// Print the interface URL without launching a browser.
+        #[arg(long)]
+        no_open: bool,
         #[arg(short, long)]
         output: PathBuf,
         #[arg(last = true)]
@@ -556,6 +570,9 @@ fn execute() -> Result<i32> {
             timeout_ms,
             protocol,
             dry_run,
+            ui,
+            no_ui,
+            no_open,
             output: out,
             args,
         } => {
@@ -594,8 +611,26 @@ fn execute() -> Result<i32> {
                 }
             };
             if dry_run {println!("{}",serde_json::to_string_pretty(&runner::preflight(plan,&out)?)?);return Ok(0);}
-            let run = runner::run(plan, &out)?;
-            println!("{}\nSaved {}", report::markdown(&run)?, out.display());
+            runner::preflight(plan.clone(), &out)?;
+            let live = !no_ui && (ui || std::io::stdout().is_terminal());
+            if live {
+                let url = web_ui::start_live(&out, &cli.store)?;
+                println!("Live benchmark: {url}");
+                if !no_open { web_ui::open_browser(&url); }
+            }
+            let result = runner::run(plan, &out);
+            if out.join("run.json").is_file() {
+                let doc = experiment_report::build(experiment_report::Options {source:&out,baseline:None,store:&cli.store,title:"Benchmark results",threshold:5.0,alpha:0.05})?;
+                output(&doc.html()?, Some(out.join("report.html")))?;
+                output(&serde_json::to_string_pretty(&doc)?, Some(out.join("report.json")))?;
+                output(&doc.markdown()?, Some(out.join("report.md")))?;
+                println!("Saved results and reports: {}", out.display());
+            }
+            if live && !runner::cancelled() && out.join("status-final.json").is_file() {
+                println!("Interface remains available. Ctrl+C to close; results are already saved.");
+                while !runner::cancelled() { std::thread::sleep(std::time::Duration::from_millis(100)); }
+            }
+            result?;
         }
         Action::ImportForma {
             source,

@@ -32,6 +32,11 @@ fn render(root: &Path, store: &Path, query: &str) -> Result<(String, String)> {
             _ => return Err(error("unknown parameter")),
         }
     }
+    if root.join("progress.json").is_file() && !root.join("status-final.json").is_file() {
+        return Err(error(
+            "Benchmark is running; report becomes available after completion",
+        ));
+    }
     let runs = experiment_report::files(root)?;
     let source = match id {
         Some(i) => runs
@@ -72,6 +77,17 @@ fn render(root: &Path, store: &Path, query: &str) -> Result<(String, String)> {
 fn route(root: &Path, store: &Path, path: &str) -> Result<(String, String)> {
     match path {
         "" | "index.html" => Ok(("text/html".into(), include_str!("web-ui.html").into())),
+        "api/live" => {
+            let state = if root.join("status-final.json").is_file() {
+                std::fs::read_to_string(root.join("status-final.json"))?
+            } else if root.join("progress.json").is_file() {
+                std::fs::read_to_string(root.join("progress.json"))?
+            } else {
+                serde_json::json!({"state": if root.is_dir() {"idle"} else {"preparing"}})
+                    .to_string()
+            };
+            Ok(("application/json".into(), state))
+        }
         "api/runs" => {
             let rows: Vec<_>=experiment_report::files(root)?.iter().map(|(label,path)|serde_json::json!({"id":identity(label),"label":label,"available":path.is_file()})).collect();
             Ok(("application/json".into(), serde_json::to_string(&rows)?))
@@ -92,16 +108,36 @@ pub fn serve(root: &Path, store: &Path, port: u16) -> Result<()> {
         return Err(error("serve requires an experiment directory"));
     }
     let listener = TcpListener::bind(("127.0.0.1", port))?;
-    let token = format!(
+    listen(listener, &root, store)
+}
+pub fn start_live(root: &Path, store: &Path) -> Result<String> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    let token = token();
+    let url = format!("http://{}/{token}/", listener.local_addr()?);
+    let root = root.to_path_buf();
+    let store = store.to_path_buf();
+    std::thread::spawn(move || {
+        let _ = connections(listener, &root, &store, &token);
+    });
+    Ok(url)
+}
+fn token() -> String {
+    format!(
         "{:016x}{:016x}",
         RandomState::new().hash_one(SystemTime::now()),
         RandomState::new().hash_one(std::process::id())
-    );
-    let prefix = format!("/{token}/");
+    )
+}
+fn listen(listener: TcpListener, root: &Path, store: &Path) -> Result<()> {
+    let token = token();
     println!(
         "Report interface: http://{}/{token}/",
         listener.local_addr()?
     );
+    connections(listener, root, store, &token)
+}
+fn connections(listener: TcpListener, root: &Path, store: &Path, token: &str) -> Result<()> {
+    let prefix = format!("/{token}/");
     for connection in listener.incoming() {
         let mut stream = connection?;
         stream.set_read_timeout(Some(Duration::from_secs(3)))?;
@@ -129,7 +165,7 @@ pub fn serve(root: &Path, store: &Path, port: u16) -> Result<()> {
             let _ = response(&mut stream, "404 Not Found", "text/plain", "Not found");
             continue;
         }
-        match route(&root, store, &parts[1][prefix.len()..]) {
+        match route(root, store, &parts[1][prefix.len()..]) {
             Ok((mime, body)) => {
                 let _ = response(&mut stream, "200 OK", &mime, &body);
             }
@@ -140,6 +176,20 @@ pub fn serve(root: &Path, store: &Path, port: u16) -> Result<()> {
     }
     Ok(())
 }
+pub fn open_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg(url).status();
+    #[cfg(target_os = "windows")]
+    let result = std::process::Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", url])
+        .status();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let result = std::process::Command::new("xdg-open").arg(url).status();
+    if !matches!(result, Ok(status) if status.success()) {
+        eprintln!("Open the live interface manually: {url}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

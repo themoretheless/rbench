@@ -32,6 +32,12 @@ fn process_success_failure_timeout_and_immutable_output() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let r = rbench::Run::load(p).unwrap();
     assert_eq!(r.observations.len(), 2);
+    for name in ["report.html", "report.json", "report.md", "progress.json"] {
+        assert!(Path::new(p).join(name).is_file(), "{name}");
+    }
+    let progress: serde_json::Value =
+        serde_json::from_slice(&fs::read(Path::new(p).join("progress.json")).unwrap()).unwrap();
+    assert_eq!(progress["completed"], 2);
     assert!(
         fs::read_to_string(Path::new(p).join("logs/0-candidate.stdout"))
             .unwrap()
