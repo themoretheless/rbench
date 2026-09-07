@@ -1,4 +1,5 @@
 mod artifacts;
+mod experiment_report;
 mod forma;
 mod git_run;
 mod matrix;
@@ -304,9 +305,18 @@ enum Action {
         #[arg(short, long)]
         output: PathBuf,
     },
-    /// Regenerate a report offline; .html selects a self-contained HTML file.
+    /// Build an offline report for one run or an experiment tree; .html/.json/.md select format.
     Report {
         run: PathBuf,
+        /// Baseline run or collection matched by relative target paths.
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+        #[arg(long, default_value = "Benchmark experiment")]
+        title: String,
+        #[arg(long, default_value_t = 5.0)]
+        threshold: f64,
+        #[arg(long, default_value_t = 0.05)]
+        alpha: f64,
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
@@ -592,20 +602,11 @@ fn execute() -> Result<i32> {
                 out.display()
             );
         }
-        Action::Report { run, output: path } => {
-            let resolved=project::resolve(&cli.store,&run)?;
-            let mut run = Run::load(&resolved)?;
-            for note in artifacts::notes(&cli.store,&resolved)? {run.notes.push(format!("User note: {}",note.text));}
-            let text = report::markdown(&run)?;
-            let text = if path
-                .as_ref()
-                .is_some_and(|p| p.extension().is_some_and(|e| e == "html"))
-            {
-                report::html_run(&run)?
-            } else {
-                text
-            };
-            output(&text, path)?;
+        Action::Report {run,baseline,title,threshold,alpha,output:path} => {
+            let doc=experiment_report::build(experiment_report::Options{source:&run,baseline:baseline.as_deref(),store:&cli.store,title:&title,threshold,alpha})?;
+            let text=match path.as_ref().and_then(|p|p.extension()).and_then(|e|e.to_str()){
+                Some("html")=>doc.html()?,Some("json")=>serde_json::to_string_pretty(&doc)?,Some("md")|None=>doc.markdown()?,_=>return Err(error("report output extension must be .html, .json or .md"))
+            };output(&text,path)?;
         }
         Action::List { run, filter } => {
             for c in load(run)?.cases {

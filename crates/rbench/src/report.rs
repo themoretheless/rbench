@@ -172,7 +172,7 @@ fn html_escape(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 /// Render the report's small Markdown subset, never arbitrary HTML.
-pub fn html(markdown: &str) -> String {
+pub fn html_fragment(markdown: &str) -> String {
     let mut body = String::new();
     let mut table = false;
     let mut header = false;
@@ -222,7 +222,11 @@ pub fn html(markdown: &str) -> String {
     if table {
         body.push_str("</tbody></table></div>");
     }
-    include_str!("report-template.html").replace("<!--CONTENT-->", &body)
+    body
+}
+/// Self-contained page for the report Markdown subset.
+pub fn html(markdown: &str) -> String {
+    include_str!("report-template.html").replace("<!--CONTENT-->", &html_fragment(markdown))
 }
 pub fn html_run(run: &Run) -> Result<String> {
     let mut text = markdown(run)?;

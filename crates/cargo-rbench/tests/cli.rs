@@ -599,3 +599,154 @@ fn privacy_multivariant_resume_and_retention() {
     assert!(resumed.exists());
     assert!(!run.exists());
 }
+
+#[test]
+fn experiment_reports_preserve_failures_and_family_uncertainty() {
+    use rbench::*;
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().join("experiment");
+    fs::create_dir(&root).unwrap();
+    let base = simple_run(&root.join("single"));
+    let mut paired = base.clone();
+    paired.id = "paired-fixture".into();
+    paired.observations.clear();
+    for p in 0..12 {
+        for (i, name, value) in [(0, "baseline", 100), (1, "candidate", 200)] {
+            let mut o = base.observations[0].clone();
+            o.process = p * 2 + i;
+            o.pair = Some(p);
+            o.variant = name.into();
+            o.value = Some(value.to_string());
+            paired.observations.push(o);
+        }
+    }
+    paired.cases[0].contract.insert(
+        "untrusted".into(),
+        "</script><img src=x onerror=alert(1)>".into(),
+    );
+    paired.save_new(root.join("regression")).unwrap();
+    let mut failed = base.clone();
+    failed.status = Status::Failed;
+    failed.notes.push("controlled failure".into());
+    failed.save_new(root.join("failed")).unwrap();
+    fs::create_dir(root.join("broken")).unwrap();
+    fs::write(root.join("broken/run.json"), "invalid JSON").unwrap();
+    fs::create_dir(root.join("unfinished")).unwrap();
+    fs::write(root.join("unfinished/plan.json"), "{}").unwrap();
+    fs::write(root.join("unfinished/status.json"), "{}").unwrap();
+    let mut unsupported = base.clone();
+    unsupported.observations[0].value = None;
+    unsupported.observations[0].availability = Availability::Unsupported("no GPU".into());
+    unsupported.save_new(root.join("unsupported")).unwrap();
+    let mut diagnostic = paired.clone();
+    diagnostic
+        .provenance
+        .insert("user.session.policy".into(), "profiler replay".into());
+    diagnostic.save_new(root.join("profile")).unwrap();
+    let json = t.path().join("report.json");
+    let html = t.path().join("report.html");
+    for out in [&json, &html] {
+        let result = cli(&[
+            "report",
+            root.to_str().unwrap(),
+            "--title",
+            "Experiment <unsafe>",
+            "-o",
+            out.to_str().unwrap(),
+        ]);
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    let d: serde_json::Value = serde_json::from_slice(&fs::read(json).unwrap()).unwrap();
+    assert_eq!(d["entries"].as_array().unwrap().len(), 7);
+    assert_eq!(d["counts"]["regression"], 1);
+    assert_eq!(d["counts"]["error"], 3);
+    assert_eq!(d["counts"]["uncompared"], 1);
+    assert_eq!(d["counts"]["diagnostic"], 1);
+    assert_eq!(d["counts"]["unavailable"], 1);
+    assert_eq!(d["entries"][0]["comparisons"][0]["independent_units"], 12);
+    let page = fs::read_to_string(&html).unwrap();
+    assert_eq!(page.matches("<!doctype html>").count(), 1);
+    assert!(!page.contains("<img src=x"));
+    assert!(page.contains("&lt;img src=x"));
+    assert!(page.contains("Effect estimates and confidence intervals"));
+    assert!(page.contains("href=\"#run-0\""));
+    assert_eq!(page.matches("class=\"run-card\"").count(), 7);
+    assert!(!cli(&[
+        "report",
+        root.to_str().unwrap(),
+        "-o",
+        html.to_str().unwrap()
+    ])
+    .status
+    .success());
+    // Explicit collection-level correction: 6 identical pairs suffice alone but not for 7 runs.
+    paired.observations.retain(|o| o.pair.unwrap() < 6);
+    fs::write(
+        root.join("regression/run.json"),
+        serde_json::to_vec_pretty(&paired).unwrap(),
+    )
+    .unwrap();
+    let out = t.path().join("uncertain.json");
+    assert!(cli(&[
+        "report",
+        root.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap()
+    ])
+    .status
+    .success());
+    let d: serde_json::Value = serde_json::from_slice(&fs::read(out).unwrap()).unwrap();
+    let e = d["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["label"] == "regression")
+        .unwrap();
+    assert_eq!(e["outcome"], "inconclusive");
+}
+#[test]
+fn report_baselines_match_paths_and_expose_missing_targets() {
+    let t = tempfile::tempdir().unwrap();
+    let a = t.path().join("base");
+    let b = t.path().join("head");
+    fs::create_dir(&a).unwrap();
+    fs::create_dir(&b).unwrap();
+    for root in [&a, &b] {
+        simple_run(&root.join("target-a"));
+        simple_run(&root.join("target-b"));
+    }
+    simple_run(&a.join("removed"));
+    simple_run(&b.join("new"));
+    let p = t.path().join("result.json");
+    let o = cli(&[
+        "report",
+        b.to_str().unwrap(),
+        "--baseline",
+        a.to_str().unwrap(),
+        "-o",
+        p.to_str().unwrap(),
+    ]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let d: serde_json::Value = serde_json::from_slice(&fs::read(p).unwrap()).unwrap();
+    assert_eq!(d["entries"].as_array().unwrap().len(), 4);
+    assert_eq!(d["counts"]["error"], 2);
+    let e = d["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["label"] == "target-a")
+        .unwrap();
+    assert!(e["baseline_sha256"].as_str().unwrap().len() == 64);
+    assert_eq!(e["outcome"], "inconclusive");
+    let o = cli(&[
+        "report",
+        b.to_str().unwrap(),
+        "--baseline",
+        a.join("target-a").to_str().unwrap(),
+    ]);
+    assert!(!o.status.success());
+}
