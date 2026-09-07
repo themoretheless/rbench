@@ -32,3 +32,6 @@ pub fn error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + S
 pub use rbench_macros::bench;
 pub mod diagnostics;
 pub mod workloads;
+
+#[cfg(feature = "memory")]
+pub mod memory;

@@ -7,7 +7,7 @@ rust-version.workspace = true
 description = "Local benchmark runner, Forma importer and offline reports"
 
 [dependencies]
-rbench = { path = "../rbench" }
+rbench = { path = "../rbench", features = ["memory"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

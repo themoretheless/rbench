@@ -13,6 +13,9 @@ try:
     assert b'<iframe' in get('')
     rows = json.loads(get('api/runs'))
     assert rows
+    for row in rows:
+        if row.get('memory'):
+            assert b'rbench.memory/1' in get('memory?id=' + row['id'])
     first = rows[0]['id']
     assert len(first) == 64
     assert b'<!doctype html>' in get('report?id=' + first).lower()

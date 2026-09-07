@@ -476,6 +476,20 @@ pub fn run(mut plan: Plan, out: &Path) -> Result<Run> {
         }
         Ok(())
     })();
+    if execution.is_ok() {
+        if let Some(path) = plan.candidate.env.get("RBENCH_MEMORY_OUTPUT") {
+            match rbench::memory::Profile::load(Path::new(path)) {
+                Ok(_) => {
+                    result
+                        .provenance
+                        .insert("memory.sha256".into(), hash_file(Path::new(path))?);
+                }
+                Err(e) => {
+                    execution = Err(error(format!("memory profile missing or invalid: {e}")));
+                }
+            }
+        }
+    }
     result.status = if CANCELLED.load(std::sync::atomic::Ordering::Relaxed) {
         Status::Cancelled
     } else if execution.is_ok() {

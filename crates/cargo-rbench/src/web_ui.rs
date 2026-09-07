@@ -89,8 +89,22 @@ fn route(root: &Path, store: &Path, path: &str) -> Result<(String, String)> {
             Ok(("application/json".into(), state))
         }
         "api/runs" => {
-            let rows: Vec<_>=experiment_report::files(root)?.iter().map(|(label,path)|serde_json::json!({"id":identity(label),"label":label,"available":path.is_file()})).collect();
+            let rows: Vec<_>=experiment_report::files(root)?.iter().map(|(label,path)|serde_json::json!({"id":identity(label),"label":label,"available":path.is_file(),"memory":path.parent().unwrap().join("memory.json").is_file()})).collect();
             Ok(("application/json".into(), serde_json::to_string(&rows)?))
+        }
+        _ if path.starts_with("memory?") => {
+            let id = path
+                .strip_prefix("memory?id=")
+                .ok_or_else(|| error("memory requires a run id"))?;
+            let runs = experiment_report::files(root)?;
+            let source = &runs
+                .iter()
+                .find(|r| identity(&r.0) == id)
+                .ok_or_else(|| error("unknown run"))?
+                .1;
+            let profile =
+                rbench::memory::Profile::load(&source.parent().unwrap().join("memory.json"))?;
+            Ok(("text/html".into(), profile.html()?))
         }
         _ if path.starts_with("report?") => render(root, store, &path[7..]),
         _ => Err(error("unknown route")),

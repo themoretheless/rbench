@@ -287,6 +287,9 @@ enum Action {
         /// Print the interface URL without launching a browser.
         #[arg(long)]
         no_open: bool,
+        /// One diagnostic memory-profile run; requires an instrumented Rust worker.
+        #[arg(long)]
+        memory: bool,
         #[arg(short, long)]
         output: PathBuf,
         #[arg(last = true)]
@@ -573,6 +576,7 @@ fn execute() -> Result<i32> {
             ui,
             no_ui,
             no_open,
+            memory,
             output: out,
             args,
         } => {
@@ -586,7 +590,7 @@ fn execute() -> Result<i32> {
             {
                 return Err(error("--plan cannot be combined with command overrides"));
             }
-            let plan = if let Some(p) = plan {
+            let mut plan = if let Some(p) = plan {
                 serde_json::from_reader(std::fs::File::open(p)?)?
             } else {
                 let p = program.ok_or_else(|| error("provide --plan or --program"))?;
@@ -610,6 +614,12 @@ fn execute() -> Result<i32> {
                         provenance: Default::default(),
                 }
             };
+            if memory {
+                if plan.baseline.is_some() || !plan.variants.is_empty() {return Err(error("memory profiling requires a single candidate"));}
+                plan.repetitions=1;
+                plan.candidate.env.insert("RBENCH_MEMORY_OUTPUT".into(), std::env::current_dir()?.join(&out).join("memory.json").to_string_lossy().into());
+                plan.provenance.insert("session.policy".into(), "memory profiler; diagnostic only".into());
+            }
             if dry_run {println!("{}",serde_json::to_string_pretty(&runner::preflight(plan,&out)?)?);return Ok(0);}
             runner::preflight(plan.clone(), &out)?;
             let live = !no_ui && (ui || std::io::stdout().is_terminal());
@@ -631,6 +641,7 @@ fn execute() -> Result<i32> {
                 while !runner::cancelled() { std::thread::sleep(std::time::Duration::from_millis(100)); }
             }
             result?;
+            if memory { rbench::memory::Profile::load(&out.join("memory.json"))?; }
         }
         Action::ImportForma {
             source,

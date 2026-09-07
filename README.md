@@ -25,6 +25,8 @@ cargo rbench report .rbench/sort -o .rbench/sort.html
 
 Веб-интерфейс: `cargo rbench serve .rbench`. Сводные отчёты по папке экспериментов: HTML с фильтрами и графиками, Markdown и JSON. [Построение отчётов](docs/REPORTS.md).
 
+Профиль памяти по стекам: `run --memory` и [подключение Rust worker](docs/MEMORY_PROFILER.md).
+
 ## API библиотеки
 
 Подключение: `rbench = { path = "/path/to/rbench/crates/rbench" }`. Для Cargo benchmark target задайте `harness = false`.

@@ -8,9 +8,11 @@ description = "Explicit, reproducible Rust benchmarks and scenario observations"
 
 [features]
 default = []
+memory = ["dep:backtrace"]
 macros = ["dep:rbench-macros"]
 
 [dependencies]
+backtrace = { version = "=0.3.76", optional = true }
 rbench-macros = { path = "../rbench-macros", optional = true }
 serde.workspace = true
 serde_json.workspace = true
@@ -25,3 +27,7 @@ targets = ["workloads"]
 [[bench]]
 name = "workloads"
 harness = false
+
+[[example]]
+name = "memory"
+required-features = ["memory"]

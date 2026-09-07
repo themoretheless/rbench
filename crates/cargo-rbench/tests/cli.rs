@@ -756,3 +756,42 @@ fn report_baselines_match_paths_and_expose_missing_targets() {
     ]);
     assert!(!o.status.success());
 }
+
+#[cfg(unix)]
+#[test]
+fn memory_requires_instrumentation_and_dry_run_is_read_only() {
+    let _guard = RUNNER_TEST.lock().unwrap();
+    let t = tempfile::tempdir().unwrap();
+    let out = t.path().join("memory");
+    let path = out.to_str().unwrap();
+    assert!(cli(&[
+        "run",
+        "--memory",
+        "--no-ui",
+        "--dry-run",
+        "--program",
+        "/bin/echo",
+        "-o",
+        path
+    ])
+    .status
+    .success());
+    assert!(!out.exists());
+    assert!(!cli(&[
+        "run",
+        "--memory",
+        "--no-ui",
+        "--program",
+        "/bin/echo",
+        "-o",
+        path
+    ])
+    .status
+    .success());
+    let run = rbench::Run::load(&out).unwrap();
+    assert_eq!(run.status, rbench::Status::Failed);
+    assert!(run
+        .notes
+        .iter()
+        .any(|n| n.contains("memory profile missing")));
+}
