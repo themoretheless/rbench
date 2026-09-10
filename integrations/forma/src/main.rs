@@ -29,6 +29,25 @@ struct Options {
     dpi: f32,
     backend: wgpu::Backends,
 }
+
+fn attach_process_metrics(run: &mut Run, case: &str) -> Result<()> {
+    let mut t = process::Tracker::begin();
+    t.poll();
+    let delta = t.finish();
+    if let Some(c) = run.cases.iter_mut().find(|c| c.id == case) {
+        for m in process::metrics() {
+            if !c.metrics.iter().any(|x| x.id == m.id) {
+                c.metrics.push(m);
+            }
+        }
+    }
+    run.observations.extend(process::observations(case, "candidate", 0, &delta));
+    run.notes.push(
+        "OS RSS/CPU sampled outside timed frames; on UMA do not add RSS to GPU payload bytes".into(),
+    );
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let mut o = Options {
         filter: String::new(),
@@ -664,9 +683,15 @@ async fn run(o: Options) -> Result<()> {
         );
     } else {
         recorder.note("Six native offscreen scenarios; checkpoint golden equality is not full-frame-sequence equivalence or window FPS. Resize switches preallocated targets; texture allocation/window resize excluded. Image scenario is explicitly unsupported. Golden readback and recorder serialization are outside measurement.");
+        let mut run = recorder.finish()?;
+        for case in run.cases.iter().map(|c| c.id.clone()).collect::<Vec<_>>() {
+            if !case.contains("/image") {
+                attach_process_metrics(&mut run, &case)?;
+            }
+        }
         println!(
             "RBENCH_RESULT={}",
-            serde_json::to_string(&recorder.finish()?)?
+            serde_json::to_string(&run)?
         );
     }
     Ok(())

@@ -33,6 +33,8 @@ pub enum Availability {
     Invalid(String),
     NotApplicable(String),
     Incomplete(String),
+    /// Host denied access to a requested counter or device (distinct from capability gaps).
+    PermissionDenied(String),
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Metric {

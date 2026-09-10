@@ -1,5 +1,7 @@
 # Реализация и проверка
 
+Hardening update 2026-09-10: этап 4 получил synthetic IID/AR(1)/drift coverage + A/A probe (`accept`); этап 6 получил OS RSS/CPU providers; этап 7 — atomic publish/recover и Linux MSRV 1.85 evidence. Полная приёмка Forma window/goldens и Windows всё ещё открыты.
+
 Реализован первый рабочий срез этапов 1–7: модель, импорт Forma, runner, microbench API, offline-анализ, recorder, allocator и CLI. Полная приёмка этапов ниже ещё не закрыта. Текущие проверки и ограничения перечислены в [VALIDATION.md](VALIDATION.md); этот документ сохраняет расширенные критерии следующих итераций.
 
 ## 1. Model + importer Forma

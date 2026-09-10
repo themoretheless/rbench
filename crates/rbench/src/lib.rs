@@ -1,11 +1,14 @@
 //! Benchmarks with explicit lifecycle, raw observations and offline analysis.
 //! No GPU, async runtime, network, or global allocator is installed implicitly.
+pub mod acceptance;
 pub mod alloc;
 pub mod analysis;
 pub mod budget;
 pub mod convenience;
 pub use convenience::{Fixture, Seeded, Selection};
 pub mod image;
+pub mod process;
+pub mod publish;
 pub mod scenario;
 pub use scenario::Recorder;
 pub mod model;

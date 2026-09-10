@@ -358,6 +358,17 @@ enum Action {
         #[arg(long)]
         offline: bool,
     },
+    /// Run synthetic statistical acceptance (coverage + A/A FPR); offline, no host workload.
+    Accept {
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Inspect an interrupted run directory without mutating it.
+    Recover {
+        run: PathBuf,
+    },
     /// Print available host capabilities; does not change system settings.
     Doctor,
 }
@@ -547,7 +558,7 @@ fn execute() -> Result<i32> {
         } => {
             let config = serde_json::from_slice(&std::fs::read(config)?)?;
             let run = load(run)?;
-            let baseline = baseline.map(&load).transpose()?;
+            let baseline = baseline.map(load).transpose()?;
             let rows = budget::evaluate(&config, &run, baseline.as_ref())?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&rows)?);
@@ -778,8 +789,26 @@ fn execute() -> Result<i32> {
                 return Ok(1);
             }
         }
+        Action::Accept { seed, output } => {
+            let report = rbench::acceptance::battery(seed)?;
+            let text = serde_json::to_string_pretty(&report)?;
+            if let Some(path) = output {
+                rbench::publish::write_new_atomic(&path, &report)?;
+                println!("wrote {}", path.display());
+            } else {
+                println!("{text}");
+            }
+        }
+        Action::Recover { run } => {
+            let report = rbench::publish::recover_report(&run)?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
         Action::Doctor => {
-            println!("rbench {}\nOS: {}\nArch: {}\nClock: std::time::Instant\nProcess tree cleanup: {}\nGPU: supplied by scenario (not probed)\nWindow: supplied by scenario (not probed)\nIsolation: local runner lease only\nStatistics: independent process units required",env!("CARGO_PKG_VERSION"),std::env::consts::OS,std::env::consts::ARCH,if cfg!(unix){"Unix process groups"}else{"direct child only; descendants unsupported"});
+            let os_metrics = match rbench::process::sample() {
+                Ok(s) => format!("available (rss_bytes={:?})", s.rss_bytes),
+                Err(e) => format!("unsupported ({e})"),
+            };
+            println!("rbench {}\nOS: {}\nArch: {}\nClock: std::time::Instant\nProcess tree cleanup: {}\nOS RSS/CPU providers: {}\nGPU: supplied by scenario (not probed)\nWindow: supplied by scenario (not probed)\nIsolation: local runner lease only\nStatistics: independent process units required\nAtomic publish: rename+fsync staging\nAccept: cargo rbench accept --seed N",env!("CARGO_PKG_VERSION"),std::env::consts::OS,std::env::consts::ARCH,if cfg!(unix){"Unix process groups"}else{"direct child only; descendants unsupported"}, os_metrics);
         }
     }
     Ok(0)

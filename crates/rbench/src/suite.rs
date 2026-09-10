@@ -55,6 +55,8 @@ pub struct Suite<'a> {
     name: String,
     entries: Vec<Entry<'a>>,
     config: Config,
+    /// When true, sample OS RSS/CPU outside timed batches and attach process metrics.
+    process_metrics: bool,
 }
 impl<'a> Suite<'a> {
     pub fn new(name: impl Into<String>) -> Self {
@@ -62,10 +64,16 @@ impl<'a> Suite<'a> {
             name: name.into(),
             entries: vec![],
             config: Config::default(),
+            process_metrics: false,
         }
     }
     pub fn config(&mut self, config: Config) -> &mut Self {
         self.config = config;
+        self
+    }
+    /// Attach OS RSS peak and CPU deltas sampled outside timed batches.
+    pub fn process_metrics(&mut self, enabled: bool) -> &mut Self {
+        self.process_metrics = enabled;
         self
     }
     pub fn bench<O: 'a>(&mut self, name: &str, mut f: impl FnMut() -> O + 'a) -> &mut Self {
@@ -464,6 +472,28 @@ impl<'a> Suite<'a> {
             }
             if under_target && !cold {
                 run.notes.push(format!("{}: some samples below half the requested duration; iteration cap or workload drift may limit precision",e.case.id));
+            }
+            if self.process_metrics {
+                let mut tracker = crate::process::Tracker::begin();
+                tracker.poll();
+                let delta = tracker.finish();
+                if let Some(c) = run.cases.last_mut() {
+                    for m in crate::process::metrics() {
+                        if !c.metrics.iter().any(|x| x.id == m.id) {
+                            c.metrics.push(m);
+                        }
+                    }
+                }
+                run.observations.extend(crate::process::observations(
+                    &e.case.id,
+                    "candidate",
+                    0,
+                    &delta,
+                ));
+                run.notes.push(format!(
+                    "{}: OS process metrics sampled outside timed batches; RSS is not additive to GPU bytes on UMA",
+                    e.case.id
+                ));
             }
         }
         run.status = Status::Complete;

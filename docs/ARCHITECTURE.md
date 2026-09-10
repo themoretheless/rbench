@@ -1,6 +1,6 @@
 # Архитектура rbench
 
-Статус: предлагаемый дизайн, не реализованный API. Основной выбор — небольшая Rust-библиотека описания экспериментов, независимый runner и общий протокол для microbenchmark, процессов и сценариев приложения. Первый целевой потребитель — Forma.
+Статус: реализованный каркас 0.1.0 + hardening (process metrics, atomic publish, acceptance). Документ сохраняет целевые границы; сверяйте с кодом crates/rbench и docs/VALIDATION.md. Основной выбор — небольшая Rust-библиотека описания экспериментов, независимый runner и общий протокол для microbenchmark, процессов и сценариев приложения. Первый целевой потребитель — Forma.
 
 ## Компоненты
 
@@ -33,6 +33,9 @@ flowchart TD
 | `cargo-rbench` | Cargo discovery/build, CLI, пути артефактов, запуск заранее собранных workers | Внутренности Forma |
 | `rbench-macros` | Необязательный синтаксический сахар над тем же builder API | Особый второй execution path |
 | Опциональные адаптеры | Tokio, wgpu, alloc, process metrics, browser, Forma import | Не должны расширять обязательные зависимости ядра |
+| `rbench::process` | OS RSS/CPU вне timed batches | GPU bytes, hot-loop sampling |
+| `rbench::publish` | temp+fsync+rename артефактов и recover incomplete runs | Семантика workload |
+| `rbench::acceptance` | Synthetic coverage / A/A probes | Утверждения о production FPR |
 
 Не создавать десяток пустых crates сразу. В первой реализации достаточно model, library, runner/CLI и analysis; адаптеры выделять по реальным несовместимым зависимостям. `wgpu 29` Forma не должен навязывать ту же версию другим проектам.
 

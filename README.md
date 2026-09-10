@@ -6,7 +6,7 @@
 
 Добавлены ещё [20 возможностей рабочего цикла](docs/NEXT20.md): профили, Git-сравнение, `last`, dry-run, фильтры/теги, fixtures/фазы, throughput, seed, история, графики, экспорт/bundle, заметки и CI-политика.
 
-Следующая очередь: [оставшиеся 20 функций и порядок реализации](docs/FINAL20.md) — пока план.
+Закрыта очередь [FINAL20](docs/FINAL20.md). Добавлены hardening-слои: OS RSS/CPU (`Suite::process_metrics` / `rbench::process`), атомарная публикация артефактов (`rbench::publish`), статистическая приёмка (`cargo rbench accept`), recover незавершённых run (`cargo rbench recover`), второй consumer `examples/tokenize`.
 
 ## Быстрый запуск
 

@@ -352,6 +352,7 @@ name = "rbench"
 version = "0.1.0"
 dependencies = [
  "backtrace",
+ "libc",
  "rbench-macros",
  "serde",
  "serde_json",
