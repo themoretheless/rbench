@@ -1,0 +1,44 @@
+name: Rust checks
+description: >-
+  Install a Rust toolchain (with caching) and run the standard workspace checks:
+  build, optionally test, and optionally Clippy with warnings denied.
+
+inputs:
+  toolchain:
+    description: Rust toolchain to install (e.g. stable, 1.85.0, nightly).
+    required: false
+    default: stable
+  components:
+    description: Extra rustup components to install (comma-separated, e.g. clippy).
+    required: false
+    default: ""
+  test:
+    description: Run `cargo test` (set to "false" to skip).
+    required: false
+    default: "true"
+  clippy:
+    description: Run `cargo clippy -- -D warnings` (set to "false" to skip).
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust (${{ inputs.toolchain }})
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ inputs.toolchain }}
+        components: ${{ inputs.components }}
+    - name: Cache cargo artifacts
+      uses: Swatinem/rust-cache@v2
+    - name: Build
+      shell: bash
+      run: cargo build --workspace --all-targets --locked
+    - name: Test
+      if: ${{ inputs.test == 'true' }}
+      shell: bash
+      run: cargo test --workspace --locked
+    - name: Clippy (deny warnings)
+      if: ${{ inputs.clippy == 'true' }}
+      shell: bash
+      run: cargo clippy --workspace --all-targets --locked -- -D warnings
