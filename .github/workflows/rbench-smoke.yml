@@ -21,13 +21,19 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Accept battery
         run: cargo run -p cargo-rbench -- accept --seed 7 -o accept.json
+      - name: Compete scorecard
+        run: cargo run -p cargo-rbench -- compete -o compete.json
       - name: Doctor
         run: cargo run -p cargo-rbench -- doctor
       - name: Overhead diagnostic
         run: cargo run -p rbench --example overhead --release
+      - name: Compete multi-metric demo
+        run: cargo run -p rbench --example compete --release
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: rbench-accept
-          path: accept.json
+          path: |
+            accept.json
+            compete.json
           if-no-files-found: warn

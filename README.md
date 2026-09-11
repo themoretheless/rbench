@@ -8,6 +8,8 @@
 
 Закрыта очередь [FINAL20](docs/FINAL20.md). Hardening+next: OS RSS/CPU, atomic publish/recover, `accept`, first-class **throughput** gate metric (`work_units`), compare/list `--exact/--glob/--exclude/--tag`, `check --min`, Windows process providers, overhead example, CI smoke workflow.
 
+Compete slice: Linux `perf_event` counters (`Suite::perf_counters`), isolation snapshot/CPU pin (`rbench::isolate`, `RBENCH_PIN_CPU`), live `accept --hardware`, `cargo rbench compete` scorecard, [docs/COMPETE.md](docs/COMPETE.md), `examples/compete.rs`.
+
  Добавлены hardening-слои: OS RSS/CPU (`Suite::process_metrics` / `rbench::process`), атомарная публикация артефактов (`rbench::publish`), статистическая приёмка (`cargo rbench accept`), recover незавершённых run (`cargo rbench recover`), второй consumer `examples/tokenize`.
 
 ## Быстрый запуск

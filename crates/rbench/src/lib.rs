@@ -8,6 +8,8 @@ pub mod convenience;
 pub use convenience::{Fixture, Seeded, Selection};
 pub mod image;
 pub mod process;
+pub mod perf;
+pub mod isolate;
 pub mod publish;
 pub mod scenario;
 pub use scenario::Recorder;

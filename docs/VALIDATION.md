@@ -106,3 +106,12 @@ Workspace tests: library unit tests for process/acceptance/publish + existing co
 - `examples/overhead` handwritten vs Suite fixed-batch diagnostic.
 - `.github/workflows/rbench-smoke.yml` runs test/clippy/accept/doctor/overhead.
 - Accept battery includes heteroscedastic coverage regime.
+
+## Compete slice 2026-09-11
+
+- `rbench::perf`: Linux `perf_event_open` instructions/cycles; probe returns Available / PermissionDenied / Unsupported — never fabricated zeroes. `Suite::perf_counters(true)` samples sibling batches after wall samples.
+- `rbench::isolate`: loadavg/governor/freq snapshot, `pin_to_cpu`, `RBENCH_PIN_CPU`, noise warnings. Not BenchExec-grade isolation.
+- `cargo rbench accept --hardware`: live Instant A/A on current host with isolation context.
+- `cargo rbench compete` / `docs/COMPETE.md`: honest scorecard vs Criterion/Divan/iai/hyperfine.
+- `examples/compete.rs`: multi-metric demo (wall + throughput + process + perf).
+- Still open: Callgrind adapter, cgroup isolation, published Criterion/Divan bake-off numbers on a quiet host, Forma window/Metal goldens.

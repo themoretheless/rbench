@@ -293,4 +293,143 @@ mod tests {
         let r = aa_false_positive_rate(12, 50, 5.0, 0.05, 99).unwrap();
         assert_eq!(r.false_regressions + r.false_improvements + r.inconclusive_or_within, 50);
     }
+
+    #[test]
+    fn hardware_aa_smoke() {
+        let r = hardware_aa(6, 3, 5.0, 0.05, 8_000).unwrap();
+        assert_eq!(
+            r.false_regressions + r.false_improvements + r.inconclusive_or_within,
+            3
+        );
+    }
+}
+
+/// Live-host A/A using real `Instant` samples of a fixed mix loop.
+///
+/// This is **not** a substitute for multi-day thermal studies. It estimates the
+/// empirical false-positive rate of the confirmatory median gate on *this* host
+/// under current load, with optional CPU pinning via `RBENCH_PIN_CPU`.
+#[derive(Debug, Clone, Serialize)]
+pub struct HardwareAaReport {
+    pub pairs: usize,
+    pub trials: usize,
+    pub threshold_percent: f64,
+    pub alpha: f64,
+    pub batch_iters: u64,
+    pub false_regressions: usize,
+    pub false_improvements: usize,
+    pub inconclusive_or_within: usize,
+    pub false_positive_rate: f64,
+    pub wilson_low: f64,
+    pub wilson_high: f64,
+    pub isolation: serde_json::Value,
+    pub note: String,
+}
+
+pub fn hardware_aa(
+    pairs: usize,
+    trials: usize,
+    threshold_percent: f64,
+    alpha: f64,
+    batch_iters: u64,
+) -> Result<HardwareAaReport> {
+    if pairs < 6 || trials == 0 || batch_iters == 0 {
+        return Err(error(
+            "hardware A/A requires pairs>=6, trials>=1, batch_iters>=1",
+        ));
+    }
+    let _pin = crate::isolate::apply_env_pin().ok().flatten();
+    let snap = crate::isolate::snapshot();
+    let warnings = crate::isolate::noise_warnings(&snap);
+    let mut false_reg = 0usize;
+    let mut false_imp = 0usize;
+    let mut ok = 0usize;
+    for trial in 0..trials {
+        let run = live_aa_run(pairs as u32, batch_iters, trial as u64)?;
+        let rows = crate::analysis::compare(&run, None, threshold_percent, alpha)?;
+        match rows[0].decision {
+            Decision::Regression => false_reg += 1,
+            Decision::Improvement => false_imp += 1,
+            Decision::WithinMargin | Decision::Inconclusive | Decision::Neutral => ok += 1,
+            Decision::Unavailable => {
+                return Err(error("hardware A/A produced Unavailable decision"));
+            }
+        }
+    }
+    let fp = false_reg + false_imp;
+    let rate = fp as f64 / trials as f64;
+    let (wilson_low, wilson_high) = wilson(fp, trials, 0.05);
+    Ok(HardwareAaReport {
+        pairs,
+        trials,
+        threshold_percent,
+        alpha,
+        batch_iters,
+        false_regressions: false_reg,
+        false_improvements: false_imp,
+        inconclusive_or_within: ok,
+        false_positive_rate: rate,
+        wilson_low,
+        wilson_high,
+        isolation: serde_json::json!({
+            "snapshot": snap,
+            "warnings": warnings,
+            "pinned_cpu_env": std::env::var("RBENCH_PIN_CPU").ok(),
+        }),
+        note: "Live Instant A/A on current host. Shared CI runners remain smoke-only; treat elevated FPR as host noise, not library failure.".into(),
+    })
+}
+
+fn live_aa_run(pairs: u32, batch_iters: u64, salt: u64) -> Result<Run> {
+    use std::time::Instant;
+    let mix = |seed: u64| {
+        let mut x = seed ^ 0x9e3779b97f4a7c15;
+        for i in 0..batch_iters {
+            x = x.wrapping_mul(0xBF58476D1CE4E5B9).wrapping_add(i ^ seed);
+            x ^= x >> 27;
+        }
+        std::hint::black_box(x);
+    };
+    let mut r = Run::new();
+    r.cases.push(Case {
+        id: "hardware_aa".into(),
+        contract: BTreeMap::from([
+            ("synthetic".into(), "live_instant_aa".into()),
+            ("batch_iters".into(), batch_iters.to_string()),
+        ]),
+        metrics: vec![Metric {
+            id: "wall".into(),
+            unit: "ns".into(),
+            scope: "live Instant around fixed mix loop".into(),
+            phase: "measurement".into(),
+            statistic: "process_total".into(),
+            direction: Direction::Lower,
+        }],
+    });
+    for p in 0..pairs {
+        for (i, variant) in [(0u32, "baseline"), (1, "candidate")] {
+            // Identical distributions: both call the same mix. Salt only diversifies start state.
+            let seed = salt
+                .wrapping_mul(0x9E3779B97F4A7C15)
+                .wrapping_add((p as u64) << 1)
+                .wrapping_add(i as u64);
+            let start = Instant::now();
+            mix(seed);
+            let elapsed = start.elapsed().as_nanos();
+            r.observations.push(Observation {
+                case: "hardware_aa".into(),
+                metric: "wall".into(),
+                variant: variant.into(),
+                process: 2 * p + i,
+                pair: Some(p),
+                sequence: 0,
+                value: Some(elapsed.to_string()),
+                operations: 1,
+                availability: Availability::Available,
+            });
+        }
+    }
+    r.status = Status::Complete;
+    r.validate()?;
+    Ok(r)
 }

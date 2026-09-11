@@ -385,6 +385,15 @@ enum Action {
     Accept {
         #[arg(long, default_value_t = 42)]
         seed: u64,
+        /// Also run live Instant A/A on this host (noisy; not a CI gate).
+        #[arg(long)]
+        hardware: bool,
+        #[arg(long, default_value_t = 8)]
+        pairs: usize,
+        #[arg(long, default_value_t = 20)]
+        trials: usize,
+        #[arg(long, default_value_t = 50_000)]
+        batch_iters: u64,
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
@@ -394,6 +403,11 @@ enum Action {
     },
     /// Print available host capabilities; does not change system settings.
     Doctor,
+    /// Print an honest capability scorecard vs common Rust timing tools.
+    Compete {
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum Uncertainty {
@@ -407,6 +421,106 @@ enum BaselineAction {
     Save { name: String, run: PathBuf },
     List,
 }
+fn compete_scorecard() -> serde_json::Value {
+    let perf = rbench::perf::probe();
+    let snap = rbench::isolate::snapshot();
+    let os = rbench::process::sample()
+        .map(|s| {
+            serde_json::json!({
+                "available": true,
+                "rss_bytes": s.rss_bytes,
+                "user_cpu_ns": s.user_cpu_ns,
+            })
+        })
+        .unwrap_or_else(|e| serde_json::json!({"available": false, "error": e.to_string()}));
+    serde_json::json!({
+        "schema": 1,
+        "product": "rbench",
+        "version": env!("CARGO_PKG_VERSION"),
+        "thesis": "Win on measurement validity and multi-metric contracts, not on microbench ergonomics marketing.",
+        "host": {
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+            "process_metrics": os,
+            "perf_event": {
+                "availability": format!("{:?}", perf.availability),
+                "note": perf.note,
+            },
+            "isolation": snap,
+            "noise_warnings": rbench::isolate::noise_warnings(&snap),
+        },
+        "dimensions": [
+            {
+                "id": "process_isolation",
+                "rbench": "first-class: AB/BA independent processes, leases, hashes, incomplete states",
+                "criterion": "in-process by default; Criterion groups share address space",
+                "divan": "in-process; designed for hot-loop throughput",
+                "iai": "Cachegrind/Callgrind instrumentation; strong for deterministic CI counts",
+                "hyperfine": "process wall time only; excellent CLI A/B for commands",
+                "verdict": "rbench leads for confirmatory product/scenario gates that need process units"
+            },
+            {
+                "id": "multi_metric_contracts",
+                "rbench": "wall + throughput + OS RSS/CPU + optional perf.instructions/cycles + scenario GPU/alloc with Availability",
+                "criterion": "primarily wall/throughput plots; custom measurements possible but not a typed availability model",
+                "divan": "wall/throughput focused",
+                "iai": "instructions/cycles/bytes via Valgrind; not wall-time product gates",
+                "hyperfine": "wall (+ optional shell); no memory/perf contracts",
+                "verdict": "rbench leads when one run must carry typed multi-metric evidence"
+            },
+            {
+                "id": "inconclusive_gates",
+                "rbench": "Inconclusive is a first-class CI outcome; never silently treated as pass/equiv",
+                "criterion": "CI usually threshold scripts on estimates; inconclusive semantics are DIY",
+                "divan": "not a confirmatory gate product",
+                "iai": "exact counters; different failure mode (tooling/env)",
+                "hyperfine": "statistical summary; gating is DIY",
+                "verdict": "rbench leads for honest regression CI"
+            },
+            {
+                "id": "hot_loop_ergonomics",
+                "rbench": "Suite builder + harness=false; overhead documented via examples/overhead.rs — not zero",
+                "criterion": "mature macros, plots, html; ecosystem default",
+                "divan": "very low overhead / ergonomic benches",
+                "iai": "N/A for microbench UX",
+                "hyperfine": "N/A (external commands)",
+                "verdict": "Criterion/Divan still win day-to-day microbench UX; do not claim otherwise"
+            },
+            {
+                "id": "deterministic_ci_counters",
+                "rbench": "Linux perf_event when permitted; PermissionDenied recorded — Callgrind adapter still open",
+                "criterion": "wall noise on shared runners",
+                "divan": "wall noise on shared runners",
+                "iai": "leads for Valgrind-backed instruction counts in CI",
+                "hyperfine": "wall noise",
+                "verdict": "iai still leads for Valgrind-deterministic CI; rbench perf is host-capability gated"
+            },
+            {
+                "id": "command_wall_benchmarks",
+                "rbench": "run --program measures process wall with protocol option; heavier than hyperfine for simple cmds",
+                "criterion": "N/A",
+                "divan": "N/A",
+                "iai": "N/A",
+                "hyperfine": "leads for shell command A/B",
+                "verdict": "hyperfine wins simple command timing; rbench wins when you need contracts+gates"
+            }
+        ],
+        "claims_forbidden": [
+            "beats Criterion/Divan on microbench ergonomics or absolute hot-loop overhead",
+            "beats iai on Valgrind-deterministic CI without a Callgrind adapter",
+            "hosted GitHub Actions is a controlled performance acceptance environment",
+            "CPU pin or loadavg snapshot equals BenchExec-grade isolation"
+        ],
+        "how_to_reproduce": {
+            "doctor": "cargo rbench doctor",
+            "synthetic_accept": "cargo rbench accept --seed 42",
+            "hardware_aa": "RBENCH_PIN_CPU=0 cargo rbench accept --hardware --pairs 8 --trials 20",
+            "multi_metric_demo": "cargo run --release --example compete --offline",
+            "docs": "docs/COMPETE.md"
+        }
+    })
+}
+
 fn output(text: &str, path: Option<PathBuf>) -> Result<()> {
     if let Some(p) = path {
         let mut f = OpenOptions::new().create_new(true).write(true).open(p)?;
@@ -856,8 +970,24 @@ fn execute() -> Result<i32> {
                 return Ok(1);
             }
         }
-        Action::Accept { seed, output } => {
-            let report = rbench::acceptance::battery(seed)?;
+        Action::Accept {
+            seed,
+            hardware,
+            pairs,
+            trials,
+            batch_iters,
+            output,
+        } => {
+            let mut report = rbench::acceptance::battery(seed)?;
+            if hardware {
+                let aa = rbench::acceptance::hardware_aa(pairs, trials, 5.0, 0.05, batch_iters)?;
+                if let Some(obj) = report.as_object_mut() {
+                    obj.insert(
+                        "hardware_aa".into(),
+                        serde_json::to_value(aa)?,
+                    );
+                }
+            }
             let text = serde_json::to_string_pretty(&report)?;
             if let Some(path) = output {
                 rbench::publish::write_new_atomic(&path, &report)?;
@@ -872,10 +1002,47 @@ fn execute() -> Result<i32> {
         }
         Action::Doctor => {
             let os_metrics = match rbench::process::sample() {
-                Ok(s) => format!("available (rss_bytes={:?})", s.rss_bytes),
+                Ok(s) => format!("available (rss_bytes={:?} user_cpu_ns={:?})", s.rss_bytes, s.user_cpu_ns),
                 Err(e) => format!("unsupported ({e})"),
             };
-            println!("rbench {}\nOS: {}\nArch: {}\nClock: std::time::Instant\nProcess tree cleanup: {}\nOS RSS/CPU providers: {}\nGPU: supplied by scenario (not probed)\nWindow: supplied by scenario (not probed)\nIsolation: local runner lease only\nStatistics: independent process units required\nAtomic publish: rename+fsync staging\nAccept: cargo rbench accept --seed N",env!("CARGO_PKG_VERSION"),std::env::consts::OS,std::env::consts::ARCH,if cfg!(unix){"Unix process groups"}else{"direct child only; descendants unsupported"}, os_metrics);
+            let perf = rbench::perf::probe();
+            let snap = rbench::isolate::snapshot();
+            let warnings = rbench::isolate::noise_warnings(&snap);
+            let pin = std::env::var("RBENCH_PIN_CPU").unwrap_or_else(|_| "(unset)".into());
+            println!(
+                "rbench {}\nOS: {}\nArch: {}\nClock: std::time::Instant\nProcess tree cleanup: {}\nOS RSS/CPU providers: {}\nperf_event: {:?} — {}\nIsolation snapshot: loadavg_1={:?} governor={:?} freq_khz={:?} pinned={:?}\nNoise warnings: {}\nRBENCH_PIN_CPU: {}\nGPU: supplied by scenario (not probed)\nWindow: supplied by scenario (not probed)\nIsolation: local runner lease + optional CPU pin (not BenchExec)\nStatistics: independent process units required\nAtomic publish: rename+fsync staging\nAccept: cargo rbench accept --seed N [--hardware]\nCompete: cargo rbench compete",
+                env!("CARGO_PKG_VERSION"),
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                if cfg!(unix) {
+                    "Unix process groups"
+                } else {
+                    "direct child only; descendants unsupported"
+                },
+                os_metrics,
+                perf.availability,
+                perf.note,
+                snap.loadavg_1,
+                snap.cpu_governor,
+                snap.cpu_freq_khz,
+                snap.pinned_cpu,
+                if warnings.is_empty() {
+                    "none".into()
+                } else {
+                    warnings.join("; ")
+                },
+                pin
+            );
+        }
+        Action::Compete { output } => {
+            let scorecard = compete_scorecard();
+            let text = serde_json::to_string_pretty(&scorecard)?;
+            if let Some(path) = output {
+                rbench::publish::write_new_atomic(&path, &scorecard)?;
+                println!("wrote {}", path.display());
+            } else {
+                println!("{text}");
+            }
         }
     }
     Ok(0)

@@ -57,6 +57,8 @@ pub struct Suite<'a> {
     config: Config,
     /// When true, sample OS RSS/CPU outside timed batches and attach process metrics.
     process_metrics: bool,
+    /// Emit Linux perf instruction/cycle counts on sibling batches when available.
+    perf_counters: bool,
 }
 impl<'a> Suite<'a> {
     pub fn new(name: impl Into<String>) -> Self {
@@ -65,6 +67,7 @@ impl<'a> Suite<'a> {
             entries: vec![],
             config: Config::default(),
             process_metrics: false,
+            perf_counters: false,
         }
     }
     pub fn config(&mut self, config: Config) -> &mut Self {
@@ -74,6 +77,12 @@ impl<'a> Suite<'a> {
     /// Attach OS RSS peak and CPU deltas sampled outside timed batches.
     pub fn process_metrics(&mut self, enabled: bool) -> &mut Self {
         self.process_metrics = enabled;
+        self
+    }
+    /// Sample `perf.instructions` / `perf.cycles` on a sibling batch after each wall sample.
+    /// Unavailable/denied counters become Availability::Unsupported|PermissionDenied — never zeroes.
+    pub fn perf_counters(&mut self, enabled: bool) -> &mut Self {
+        self.perf_counters = enabled;
         self
     }
     pub fn bench<O: 'a>(&mut self, name: &str, mut f: impl FnMut() -> O + 'a) -> &mut Self {
@@ -511,6 +520,63 @@ impl<'a> Suite<'a> {
                             Availability::Invalid("zero-duration batch; throughput undefined".into())
                         },
                     });
+                }
+            }
+            if self.perf_counters {
+                let probe = crate::perf::probe();
+                if let Some(c) = run.cases.last_mut() {
+                    for m in crate::perf::metrics() {
+                        if !c.metrics.iter().any(|x| x.id == m.id) {
+                            c.metrics.push(m);
+                        }
+                    }
+                }
+                match crate::perf::Counters::open() {
+                    Ok(counters) => {
+                        for sequence in 0..samples {
+                            let measured = counters.measure_counts(|| (e.work)(n));
+                            match measured {
+                                Ok((_elapsed, counts)) => {
+                                    run.observations.extend(crate::perf::observations(
+                                        &e.case.id,
+                                        "candidate",
+                                        0,
+                                        sequence as u64,
+                                        &counts,
+                                        &crate::Availability::Available,
+                                    ));
+                                }
+                                Err(err) => {
+                                    run.observations.extend(crate::perf::observations(
+                                        &e.case.id,
+                                        "candidate",
+                                        0,
+                                        sequence as u64,
+                                        &crate::perf::Counts::default(),
+                                        &crate::Availability::Invalid(err.to_string()),
+                                    ));
+                                }
+                            }
+                        }
+                        run.notes.push(format!(
+                            "{}: perf counters sampled on sibling batches after wall samples; counts include Suite timing bookkeeping inside work()",
+                            e.case.id
+                        ));
+                    }
+                    Err(_) => {
+                        run.observations.extend(crate::perf::observations(
+                            &e.case.id,
+                            "candidate",
+                            0,
+                            0,
+                            &crate::perf::Counts::default(),
+                            &probe.availability,
+                        ));
+                        run.notes.push(format!(
+                            "{}: perf counters unavailable: {}",
+                            e.case.id, probe.note
+                        ));
+                    }
                 }
             }
             if let Some(check) = &mut e.verify {
