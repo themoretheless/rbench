@@ -8,6 +8,7 @@ mod project;
 mod revisions;
 mod runner;
 mod sessions;
+mod time_cmd;
 mod web_ui;
 use clap::{Parser, Subcommand};
 use rbench::{analysis, report, *};
@@ -311,18 +312,33 @@ enum Action {
         check: bool,
         #[arg(long, default_value = "")]
         filter: String,
+        /// Exact case-id match (mutually exclusive with --glob).
+        #[arg(long)]
+        exact: bool,
+        /// Glob case-id match (*, ?); mutually exclusive with --exact.
+        #[arg(long)]
+        glob: bool,
+        /// Glob patterns to exclude (repeatable).
+        #[arg(long)]
+        exclude: Vec<String>,
+        /// Require contract tag.NAME=true (repeatable; AND).
+        #[arg(long)]
+        tag: Vec<String>,
         #[arg(long, default_value = "")]
         metric: String,
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    /// Check every available observation against an absolute maximum (no statistical inference).
+    /// Check every available observation against an absolute maximum and optional minimum (no statistical inference).
     Check {
         run: PathBuf,
         #[arg(long)]
         metric: String,
         #[arg(long)]
-        max: f64,
+        max: Option<f64>,
+        /// Absolute lower bound (useful for Higher metrics such as throughput).
+        #[arg(long)]
+        min: Option<f64>,
     },
     /// Import completed legacy Forma offscreen or paired directories.
     ImportForma {
@@ -350,6 +366,14 @@ enum Action {
         run: PathBuf,
         #[arg(long, default_value = "")]
         filter: String,
+        #[arg(long)]
+        exact: bool,
+        #[arg(long)]
+        glob: bool,
+        #[arg(long)]
+        exclude: Vec<String>,
+        #[arg(long)]
+        tag: Vec<String>,
     },
     /// Build benchmark executables without measuring (for project harness=false benches).
     Build {
@@ -358,8 +382,76 @@ enum Action {
         #[arg(long)]
         offline: bool,
     },
+    /// Run synthetic statistical acceptance (coverage + A/A FPR); offline, no host workload.
+    Accept {
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        /// Also run live Instant A/A on this host (noisy; not a CI gate).
+        #[arg(long)]
+        hardware: bool,
+        #[arg(long, default_value_t = 8)]
+        pairs: usize,
+        #[arg(long, default_value_t = 20)]
+        trials: usize,
+        #[arg(long, default_value_t = 50_000)]
+        batch_iters: u64,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Inspect an interrupted run directory without mutating it.
+    Recover {
+        run: PathBuf,
+    },
     /// Print available host capabilities; does not change system settings.
     Doctor,
+    /// Print an honest capability scorecard vs common Rust timing tools.
+    Compete {
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Run a program under Callgrind for deterministic CI counters (iai-class).
+    Callgrind {
+        /// Program to execute under valgrind --tool=callgrind.
+        #[arg(long)]
+        program: PathBuf,
+        #[arg(long, default_value = ".rbench/callgrind")]
+        out_dir: PathBuf,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Extra args forwarded to the program after `--`.
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+    /// Hyperfine-class command wall timing (blocking wait; optional Run artifact).
+    Time {
+        #[arg(long, default_value_t = 20)]
+        runs: u32,
+        #[arg(long, default_value_t = 3)]
+        warmup: u32,
+        /// Interpret the single argument after `--` as a shell command.
+        #[arg(long)]
+        shell: bool,
+        #[arg(long)]
+        prepare: Option<String>,
+        #[arg(long)]
+        cleanup: Option<String>,
+        #[arg(long)]
+        timeout_ms: Option<u64>,
+        #[arg(long, value_enum, default_value = "markdown")]
+        format: TimeFormat,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Also write a Run JSON for gates (path).
+        #[arg(long)]
+        run_output: Option<PathBuf>,
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
+}
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum TimeFormat {
+    Markdown,
+    Json,
 }
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum Uncertainty {
@@ -373,6 +465,108 @@ enum BaselineAction {
     Save { name: String, run: PathBuf },
     List,
 }
+fn compete_scorecard() -> serde_json::Value {
+    let perf = rbench::perf::probe();
+    let snap = rbench::isolate::snapshot();
+    let os = rbench::process::sample()
+        .map(|s| {
+            serde_json::json!({
+                "available": true,
+                "rss_bytes": s.rss_bytes,
+                "user_cpu_ns": s.user_cpu_ns,
+            })
+        })
+        .unwrap_or_else(|e| serde_json::json!({"available": false, "error": e.to_string()}));
+    serde_json::json!({
+        "schema": 1,
+        "product": "rbench",
+        "version": env!("CARGO_PKG_VERSION"),
+        "thesis": "Win on measurement validity and multi-metric contracts, not on microbench ergonomics marketing.",
+        "host": {
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+            "process_metrics": os,
+            "perf_event": {
+                "availability": format!("{:?}", perf.availability),
+                "note": perf.note,
+            },
+            "isolation": snap,
+            "noise_warnings": rbench::isolate::noise_warnings(&snap),
+        },
+        "dimensions": [
+            {
+                "id": "process_isolation",
+                "rbench": "first-class: AB/BA independent processes, leases, hashes, incomplete states",
+                "criterion": "in-process by default; Criterion groups share address space",
+                "divan": "in-process; designed for hot-loop throughput",
+                "iai": "Cachegrind/Callgrind instrumentation; strong for deterministic CI counts",
+                "hyperfine": "process wall time only; excellent CLI A/B for commands",
+                "verdict": "rbench leads for confirmatory product/scenario gates that need process units"
+            },
+            {
+                "id": "multi_metric_contracts",
+                "rbench": "wall + throughput + OS RSS/CPU + optional perf.instructions/cycles + scenario GPU/alloc with Availability",
+                "criterion": "primarily wall/throughput plots; custom measurements possible but not a typed availability model",
+                "divan": "wall/throughput focused",
+                "iai": "instructions/cycles/bytes via Valgrind; not wall-time product gates",
+                "hyperfine": "wall (+ optional shell); no memory/perf contracts",
+                "verdict": "rbench leads when one run must carry typed multi-metric evidence"
+            },
+            {
+                "id": "inconclusive_gates",
+                "rbench": "Inconclusive is a first-class CI outcome; never silently treated as pass/equiv",
+                "criterion": "CI usually threshold scripts on estimates; inconclusive semantics are DIY",
+                "divan": "not a confirmatory gate product",
+                "iai": "exact counters; different failure mode (tooling/env)",
+                "hyperfine": "statistical summary; gating is DIY",
+                "verdict": "rbench leads for honest regression CI"
+            },
+            {
+                "id": "hot_loop_ergonomics",
+                "rbench": "#[rbench::bench]/#[rbench::main], Suite::bench_batch (caller-owned hot loop), Config::profile, HTML reports",
+                "criterion": "mature macros, plots, html; ecosystem default for charts",
+                "divan": "very low overhead; still competitive on absolute ns for tiny bodies",
+                "iai": "N/A for microbench UX",
+                "hyperfine": "N/A (external commands)",
+                "verdict": "Lead on confirmatory Suite ergonomics; Competitive with Criterion/Divan on day-to-day microbench UX (Criterion keeps deepest HTML plots)"
+            },
+            {
+                "id": "deterministic_ci_counters",
+                "rbench": "Callgrind adapter (cargo rbench callgrind + rbench::callgrind) + Linux perf_event when permitted; Availability never fabricates zeroes",
+                "criterion": "wall noise on shared runners",
+                "divan": "wall noise on shared runners",
+                "iai": "mature Valgrind workflow; comparable Ir/Dr/Dw class counters",
+                "hyperfine": "wall noise",
+                "verdict": "Lead (tied with iai) for Valgrind-deterministic CI counters when valgrind is installed; Unsupported when absent"
+            },
+            {
+                "id": "command_wall_benchmarks",
+                "rbench": "cargo rbench time — warmup/runs/shell/prepare/cleanup, blocking wait, markdown/json + optional Run artifact for gates",
+                "criterion": "N/A",
+                "divan": "N/A",
+                "iai": "N/A",
+                "hyperfine": "excellent UX; still strong for pure shell timing",
+                "verdict": "Lead for command timing that must feed rbench contracts/gates; Competitive with hyperfine on simple CLI A/B"
+            }
+        ],
+        "claims_forbidden": [
+            "zero hot-loop overhead versus a handwritten Instant loop or Divan on every workload",
+            "hosted GitHub Actions is a controlled performance acceptance environment",
+            "CPU pin or loadavg snapshot equals BenchExec-grade isolation",
+            "Callgrind Ir equals wall-time or uninstrumented instruction counts"
+        ],
+        "how_to_reproduce": {
+            "doctor": "cargo rbench doctor",
+            "synthetic_accept": "cargo rbench accept --seed 42",
+            "hardware_aa": "RBENCH_PIN_CPU=0 cargo rbench accept --hardware --pairs 8 --trials 20",
+            "callgrind": "cargo rbench callgrind --program ./target/release/examples/overhead -o callgrind.json",
+            "time": "cargo rbench time --runs 30 --warmup 3 -- /bin/true",
+            "multi_metric_demo": "cargo run --release --example compete --offline",
+            "docs": "docs/COMPETE.md"
+        }
+    })
+}
+
 fn output(text: &str, path: Option<PathBuf>) -> Result<()> {
     if let Some(p) = path {
         let mut f = OpenOptions::new().create_new(true).write(true).open(p)?;
@@ -382,6 +576,29 @@ fn output(text: &str, path: Option<PathBuf>) -> Result<()> {
     }
     Ok(())
 }
+
+fn select_cases(
+    run: &mut Run,
+    filter: &str,
+    exact: bool,
+    glob_mode: bool,
+    exclude: &[String],
+    tags: &[String],
+) -> Result<()> {
+    let selection = Selection {
+        pattern: filter.into(),
+        exact,
+        glob: glob_mode,
+        exclude: exclude.to_vec(),
+        tags: tags.to_vec(),
+    };
+    selection.validate()?;
+    run.cases.retain(|c| selection.matches(c));
+    run.observations
+        .retain(|o| run.cases.iter().any(|c| c.id == o.case));
+    Ok(())
+}
+
 fn execute() -> Result<i32> {
     let mut args: Vec<_> = std::env::args_os().collect();
     if args.get(1).is_some_and(|x| x == "rbench") {
@@ -547,7 +764,7 @@ fn execute() -> Result<i32> {
         } => {
             let config = serde_json::from_slice(&std::fs::read(config)?)?;
             let run = load(run)?;
-            let baseline = baseline.map(&load).transpose()?;
+            let baseline = baseline.map(load).transpose()?;
             let rows = budget::evaluate(&config, &run, baseline.as_ref())?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&rows)?);
@@ -663,11 +880,11 @@ fn execute() -> Result<i32> {
                 Some("html")=>doc.html()?,Some("json")=>serde_json::to_string_pretty(&doc)?,Some("md")|None=>doc.markdown()?,_=>return Err(error("report output extension must be .html, .json or .md"))
             };output(&text,path)?;
         }
-        Action::List { run, filter } => {
-            for c in load(run)?.cases {
-                if c.id.contains(&filter) {
-                    println!("{}", c.id);
-                }
+        Action::List { run, filter, exact, glob, exclude, tag } => {
+            let mut r = load(run)?;
+            select_cases(&mut r, &filter, exact, glob, &exclude, &tag)?;
+            for c in r.cases {
+                println!("{}", c.id);
             }
         }
         Action::Compare {
@@ -679,11 +896,15 @@ fn execute() -> Result<i32> {
             uncertainty,
             check,
             filter,
+            exact,
+            glob,
+            exclude,
+            tag,
             metric,
             output: path,
         } => {
             let select = |mut r: Run| -> Result<Run> {
-                r.cases.retain(|c| c.id.contains(&filter));
+                select_cases(&mut r, &filter, exact, glob, &exclude, &tag)?;
                 for c in &mut r.cases {
                     c.metrics.retain(|m| m.id.contains(&metric));
                 }
@@ -693,6 +914,9 @@ fn execute() -> Result<i32> {
                         .iter()
                         .any(|c| c.id == o.case && c.metrics.iter().any(|m| m.id == o.metric))
                 });
+                if r.cases.is_empty() {
+                    return Err(error("filter matched no cases/metrics"));
+                }
                 r.validate()?;
                 Ok(r)
             };
@@ -735,9 +959,17 @@ fn execute() -> Result<i32> {
                 return Err(error("Cargo benchmark build failed"));
             }
         }
-        Action::Check { run, metric, max } => {
-            if !max.is_finite() || max < 0.0 {
-                return Err(error("--max must be finite and nonnegative"));
+        Action::Check { run, metric, max, min } => {
+            if max.is_none() && min.is_none() {
+                return Err(error("check requires --max and/or --min"));
+            }
+            if max.is_some_and(|v| !v.is_finite() || v < 0.0) || min.is_some_and(|v| !v.is_finite() || v < 0.0) {
+                return Err(error("--max/--min must be finite and nonnegative"));
+            }
+            if let (Some(lo), Some(hi)) = (min, max) {
+                if lo > hi {
+                    return Err(error("--min cannot exceed --max"));
+                }
             }
             let run = load(run)?;
             if run.status != Status::Complete {
@@ -754,18 +986,22 @@ fn execute() -> Result<i32> {
                     .cases
                     .iter()
                     .find(|c| c.id == o.case)
-                    .unwrap()
-                    .metrics
-                    .iter()
-                    .find(|m| m.id == metric)
-                    .unwrap();
+                    .and_then(|c| c.metrics.iter().find(|m| m.id == metric))
+                    .ok_or_else(|| error("metric descriptor missing for observation"))?;
                 if m.statistic == "batch_total" {
                     value /= o.operations as f64;
                 }
-                if value > max {
+                if max.is_some_and(|hi| value > hi) {
                     eprintln!(
-                        "{} {} process {}: {value} {} > {max}",
-                        o.case, o.variant, o.process, m.unit
+                        "{} {} process {}: {value} {} > max {}",
+                        o.case, o.variant, o.process, m.unit, max.unwrap()
+                    );
+                    failed = true;
+                }
+                if min.is_some_and(|lo| value < lo) {
+                    eprintln!(
+                        "{} {} process {}: {value} {} < min {}",
+                        o.case, o.variant, o.process, m.unit, min.unwrap()
                     );
                     failed = true;
                 }
@@ -773,13 +1009,181 @@ fn execute() -> Result<i32> {
             if count == 0 {
                 return Err(error("metric not found"));
             }
-            println!("Checked {count} observations; absolute max {max}. This is a budget check, not a statistical comparison.");
+            println!(
+                "Checked {count} observations; absolute bounds max={max:?} min={min:?}. This is a budget check, not a statistical comparison."
+            );
             if failed {
                 return Ok(1);
             }
         }
+        Action::Accept {
+            seed,
+            hardware,
+            pairs,
+            trials,
+            batch_iters,
+            output,
+        } => {
+            let mut report = rbench::acceptance::battery(seed)?;
+            if hardware {
+                let aa = rbench::acceptance::hardware_aa(pairs, trials, 5.0, 0.05, batch_iters)?;
+                if let Some(obj) = report.as_object_mut() {
+                    obj.insert(
+                        "hardware_aa".into(),
+                        serde_json::to_value(aa)?,
+                    );
+                }
+            }
+            let text = serde_json::to_string_pretty(&report)?;
+            if let Some(path) = output {
+                rbench::publish::write_new_atomic(&path, &report)?;
+                println!("wrote {}", path.display());
+            } else {
+                println!("{text}");
+            }
+        }
+        Action::Recover { run } => {
+            let report = rbench::publish::recover_report(&run)?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
         Action::Doctor => {
-            println!("rbench {}\nOS: {}\nArch: {}\nClock: std::time::Instant\nProcess tree cleanup: {}\nGPU: supplied by scenario (not probed)\nWindow: supplied by scenario (not probed)\nIsolation: local runner lease only\nStatistics: independent process units required",env!("CARGO_PKG_VERSION"),std::env::consts::OS,std::env::consts::ARCH,if cfg!(unix){"Unix process groups"}else{"direct child only; descendants unsupported"});
+            let os_metrics = match rbench::process::sample() {
+                Ok(s) => format!("available (rss_bytes={:?} user_cpu_ns={:?})", s.rss_bytes, s.user_cpu_ns),
+                Err(e) => format!("unsupported ({e})"),
+            };
+            let perf = rbench::perf::probe();
+            let cg = rbench::callgrind::probe();
+            let snap = rbench::isolate::snapshot();
+            let warnings = rbench::isolate::noise_warnings(&snap);
+            let pin = std::env::var("RBENCH_PIN_CPU").unwrap_or_else(|_| "(unset)".into());
+            let cgroup_env = std::env::var("RBENCH_CGROUP").unwrap_or_else(|_| "(unset)".into());
+            println!(
+                "rbench {}\nOS: {}\nArch: {}\nClock: std::time::Instant\nProcess tree cleanup: {}\nOS RSS/CPU providers: {}\nperf_event: {:?} — {}\ncallgrind: {:?} — {}\nIsolation snapshot: loadavg_1={:?} governor={:?} freq_khz={:?} pinned={:?}\ncgroup: path={:?} cpu.max={:?} memory.max={:?}\nNoise warnings: {}\nRBENCH_PIN_CPU: {}\nRBENCH_CGROUP: {}\nGPU: supplied by scenario (not probed)\nWindow: supplied by scenario (not probed)\nIsolation: local runner lease + optional CPU pin + best-effort cgroup v2 (not BenchExec)\nStatistics: independent process units required\nAtomic publish: rename+fsync staging\nAccept: cargo rbench accept --seed N [--hardware]\nCallgrind: cargo rbench callgrind --program PATH\nTime: cargo rbench time --runs N -- CMD\nCompete: cargo rbench compete",
+                env!("CARGO_PKG_VERSION"),
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                if cfg!(unix) {
+                    "Unix process groups"
+                } else {
+                    "direct child only; descendants unsupported"
+                },
+                os_metrics,
+                perf.availability,
+                perf.note,
+                cg.availability,
+                cg.note,
+                snap.loadavg_1,
+                snap.cpu_governor,
+                snap.cpu_freq_khz,
+                snap.pinned_cpu,
+                snap.cgroup_path,
+                snap.cgroup_cpu_max,
+                snap.cgroup_memory_max,
+                if warnings.is_empty() {
+                    "none".into()
+                } else {
+                    warnings.join("; ")
+                },
+                pin,
+                cgroup_env
+            );
+        }
+        Action::Compete { output } => {
+            let scorecard = compete_scorecard();
+            let text = serde_json::to_string_pretty(&scorecard)?;
+            if let Some(path) = output {
+                rbench::publish::write_new_atomic(&path, &scorecard)?;
+                println!("wrote {}", path.display());
+            } else {
+                println!("{text}");
+            }
+        }
+        Action::Callgrind {
+            program,
+            out_dir,
+            output,
+            args,
+        } => {
+            let report = rbench::callgrind::run_program(&program, &args, &out_dir, &[])?;
+            let mut run = Run::new();
+            run.cases.push(Case {
+                id: "callgrind".into(),
+                contract: std::collections::BTreeMap::from([
+                    ("program".into(), program.display().to_string()),
+                    ("tool".into(), "callgrind".into()),
+                ]),
+                metrics: rbench::callgrind::metrics(),
+            });
+            run.observations.extend(rbench::callgrind::observations(
+                "callgrind",
+                "candidate",
+                0,
+                0,
+                &report.counts,
+                &report.availability,
+            ));
+            run.notes.push(report.note.clone());
+            if !report.valgrind_stderr.is_empty() {
+                run.notes.push(format!(
+                    "valgrind stderr (truncated): {}",
+                    report.valgrind_stderr.chars().take(500).collect::<String>()
+                ));
+            }
+            run.status = Status::Complete;
+            run.validate()?;
+            let payload = serde_json::json!({
+                "report": report,
+                "run": run,
+            });
+            let text = serde_json::to_string_pretty(&payload)?;
+            if let Some(path) = output {
+                rbench::publish::write_new_atomic(&path, &payload)?;
+                println!("wrote {}", path.display());
+            } else {
+                println!("{text}");
+            }
+            if report.availability != Availability::Available {
+                return Ok(1);
+            }
+        }
+        Action::Time {
+            runs,
+            warmup,
+            shell,
+            prepare,
+            cleanup,
+            timeout_ms,
+            format,
+            output,
+            run_output,
+            command,
+        } => {
+            let command = time_cmd::parse_command_line(&command, shell)?;
+            let req = time_cmd::Request {
+                command,
+                shell,
+                runs,
+                warmup,
+                prepare,
+                cleanup,
+                timeout: timeout_ms.map(std::time::Duration::from_millis),
+            };
+            let (summary, run) = time_cmd::run(&req)?;
+            if let Some(path) = run_output {
+                time_cmd::write_run(&run, &path)?;
+                eprintln!("wrote run {}", path.display());
+            }
+            let text = match format {
+                TimeFormat::Markdown => time_cmd::markdown(&summary),
+                TimeFormat::Json => serde_json::to_string_pretty(&summary)?,
+            };
+            if let Some(path) = output {
+                // markdown/json text — not necessarily JSON value
+                std::fs::write(&path, &text)?;
+                println!("wrote {}", path.display());
+            } else {
+                print!("{text}");
+            }
         }
     }
     Ok(0)

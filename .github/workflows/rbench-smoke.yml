@@ -1,0 +1,46 @@
+name: rbench smoke
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+        with:
+          components: clippy
+      - name: Build & test
+        run: cargo test --workspace --offline || cargo test --workspace
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Accept battery
+        run: cargo run -p cargo-rbench -- accept --seed 7 -o accept.json
+      - name: Compete scorecard
+        run: cargo run -p cargo-rbench -- compete -o compete.json
+      - name: Doctor
+        run: cargo run -p cargo-rbench -- doctor
+      - name: Command timing
+        run: cargo run -p cargo-rbench -- time --runs 5 --warmup 1 -- /bin/true
+      - name: Callgrind (optional)
+        run: cargo run -p cargo-rbench -- callgrind --program /bin/true --out-dir /tmp/cg -o callgrind.json || true
+      - name: Overhead diagnostic
+        run: cargo run -p rbench --example overhead --release
+      - name: Bakeoff table
+        run: cargo run -p rbench --example bakeoff --release
+      - name: Compete multi-metric demo
+        run: cargo run -p rbench --example compete --release
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rbench-accept
+          path: |
+            accept.json
+            compete.json
+            callgrind.json
+          if-no-files-found: warn

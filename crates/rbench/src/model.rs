@@ -33,6 +33,8 @@ pub enum Availability {
     Invalid(String),
     NotApplicable(String),
     Incomplete(String),
+    /// Host denied access to a requested counter or device (distinct from capability gaps).
+    PermissionDenied(String),
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Metric {
@@ -52,6 +54,17 @@ impl Metric {
             phase: "measurement".into(),
             statistic: statistic.into(),
             direction: Direction::Lower,
+        }
+    }
+    /// Throughput / rate metric: higher is better. `unit` is the rate unit (e.g. `bytes/s`).
+    pub fn rate(id: &str, unit: &str, scope: &str, statistic: &str) -> Self {
+        Self {
+            id: id.into(),
+            unit: unit.into(),
+            scope: scope.into(),
+            phase: "measurement".into(),
+            statistic: statistic.into(),
+            direction: Direction::Higher,
         }
     }
 }

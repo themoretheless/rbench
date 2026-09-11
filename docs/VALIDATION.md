@@ -35,7 +35,7 @@
 - `cargo clippy --workspace --all-targets --offline -- -D warnings`: успешно.
 - Release-сборки workspace, examples и отдельного Forma adapter: успешно.
 - Контрактные тесты: свежий input, однократный Drop, lazy registration, неверные значения/availability, несовместимые окружения, missing pairs, zero baseline, независимость process-level единиц, escaped reports, failed realloc/shrink/zeroed allocation.
-- Seeded Monte Carlo: 2000 IID uniform выборок проверяют coverage интервала медианы. Это ограниченная проверка; автокорреляция, дрейф и все распределения не покрыты.
+- Seeded Monte Carlo: IID coverage + AR(1)/drift diagnostics + synthetic A/A (`cargo rbench accept`). Это ограниченная synthetic приёмка; hardware A/A и полный FPR under thermal drift не закрыты.
 
 ## Реальные запуски
 
@@ -57,12 +57,12 @@ Forma: медиана наблюдений CPU submit 41 µs, completed 1.302521
 ## Границы текущей версии
 
 - Native window/present lifecycle, GPU timestamp adapter, async/browser drivers и macro DSL ещё не реализованы. Golden comparison реализован для отдельных checkpoints; полная последовательность кадров не проверяется.
-- Allocator считает Rust process scope; нет OS RSS/CPU provider, thread-local allocator scope и отдельного phase peak. Lifetime peak явно отличается от phase peak.
+- Allocator считает Rust process scope; OS RSS/CPU provider добавлен (`rbench::process`, вне timed batches). Нет thread-local allocator scope. Lifetime peak явно отличается от phase peak.
 - HTML автономный, с таблицей, фильтром, сортировкой и раскрытием contracts; исторический dashboard отсутствует.
 - Сборка проверена на текущем macOS toolchain. Заявленный MSRV 1.85 и Windows/Linux ещё не проверены. На Unix убирается process group; на других ОС только непосредственный child.
 - Runner lock исключает параллельные rbench, но не другую нагрузку, температурный дрейф или изменения частот. После аварийного kill stale lock может требовать ручного удаления после проверки отсутствия runner.
 - Окружение фиксируется частично. Для значимых настроек нужны explicit plan.env и contract; секреты в plan.env попадут в локальные артефакты. Автоматического редактирования system settings нет.
-- JSON-схема валидируется, но crash-durable atomic directory publication отсутствует. Окончательный статус — `status-final.json`; отсутствие финального файла означает незавершённый запуск.
+- JSON-схема валидируется; финальные `run.json`/`status-final.json` публикуются через temp+fsync+rename (`rbench::publish`). `cargo rbench recover` классифицирует interrupted dirs. Окончательный статус — `status-final.json`; отсутствие финального файла означает незавершённый запуск.
 - Legacy importer намеренно принимает известную матрицу Forma, а не произвольные будущие схемы. Сохранённые aggregates не превращаются в raw frame samples.
 - Эффект instrumentation, overhead относительно handwritten/Criterion/Divan и статистическая устойчивость при систематическом дрейфе ещё требуют отдельных экспериментов.
 
@@ -81,3 +81,50 @@ Privacy tests cover streamed split literals, escaped secrets, allowlisted inheri
 Instrumentation cost was measured in a balanced system/tracked/phase A/B/C experiment (36 processes, 8 samples each). Both corrected comparisons were Inconclusive at the 5% practical margin; no zero-overhead or universal coefficient claim is made. Pilot simulation uses independent confirmation data, 2,000 fixed-seed experiments; the budget extrapolation remains a heuristic, not a power guarantee.
 
 Local artifact paths and detailed feature contracts are in [FINAL20.md](FINAL20.md). Checksums are recorded in ignored `.rbench/final20-evidence.json`. Raw artifacts are intentionally not committed. Window image goldens, compositor scanout/drop counts, non-Metal GPU success paths, actual query-device-failure recovery, remote CI execution and new browser visual validation are **not** established by these checks.
+
+
+## Hardening 2026-09-10 (Linux x86_64, rustc 1.85)
+
+Implemented and checked in this workspace (not a substitute for macOS/Metal Forma evidence):
+
+- `rbench::process` samples RSS/CPU outside timed batches on Linux (`/proc`) and macOS (`getrusage`). Unavailable OS returns `Availability::Unsupported`. Doctor reports live RSS.
+- `Suite::process_metrics(true)` attaches `os.rss_peak` / `os.cpu_user` / `os.cpu_system` after measurement; example `tokenize` emits them with MiB/s throughput.
+- `rbench::publish` writes JSON via temp+fsync+rename; runner publishes `run.json` / `status-final.json` atomically. `cargo rbench recover` classifies incomplete dirs with `partial-*.json`.
+- `rbench::acceptance` Monte Carlo: IID coverage near 1−α; AR(1) under-coverage demonstrated; synthetic A/A FPR probe. CLI: `cargo rbench accept --seed N`.
+- `Availability::PermissionDenied` distinguished from capability gaps.
+- Forma adapter attaches process metrics outside timed frames and notes UMA non-additivity.
+- Portability: validated here on Linux + MSRV toolchain 1.85.0. Windows providers remain unsupported (explicit error). Remote CI of generated workflow still not executed.
+
+Workspace tests: library unit tests for process/acceptance/publish + existing contracts/CLI suite green under `--offline`.
+
+## Next slice 2026-09-11
+
+- Throughput is a first-class `Direction::Higher` observation when `work_units` is set; budgets may use `min` / relative regression.
+- `cargo rbench compare|list` support `--exact/--glob/--exclude/--tag` (same Selection rules as Suite).
+- `cargo rbench check --min` for Higher metrics.
+- Windows RSS/CPU via GetProcessMemoryInfo/GetProcessTimes (compile-time; not runtime-validated here).
+- `examples/overhead` handwritten vs Suite fixed-batch diagnostic.
+- `.github/workflows/rbench-smoke.yml` runs test/clippy/accept/doctor/overhead.
+- Accept battery includes heteroscedastic coverage regime.
+
+## Compete slice 2026-09-11
+
+- `rbench::perf`: Linux `perf_event_open` instructions/cycles; probe returns Available / PermissionDenied / Unsupported — never fabricated zeroes. `Suite::perf_counters(true)` samples sibling batches after wall samples.
+- `rbench::isolate`: loadavg/governor/freq snapshot, `pin_to_cpu`, `RBENCH_PIN_CPU`, noise warnings. Not BenchExec-grade isolation.
+- `cargo rbench accept --hardware`: live Instant A/A on current host with isolation context.
+- `cargo rbench compete` / `docs/COMPETE.md`: honest scorecard vs Criterion/Divan/iai/hyperfine.
+- `examples/compete.rs`: multi-metric demo (wall + throughput + process + perf).
+
+## Close-the-gaps slice 2026-09-11
+
+- `rbench::callgrind` + `cargo rbench callgrind`: Valgrind Callgrind Ir/Dr/Dw for iai-class deterministic CI; Unavailable when valgrind missing.
+- `Suite::bench_batch` + `#[rbench::bench]` / `#[rbench::main]`: Divan-competitive hot-loop ergonomics / bookkeeping.
+- `cargo rbench time`: hyperfine-class command wall timing (blocking wait, warmup/runs/shell/prepare/cleanup, markdown/json + optional Run).
+- Scorecard Trails removed: hot-loop Competitive/Lead, Callgrind Lead (tied), command timing Lead/Competitive.
+- Still open: published Criterion/Divan quiet-host numbers checked into docs after a dedicated quiet run, Forma window/Metal goldens.
+
+## Isolation + AND gates slice 2026-09-11
+
+- `rbench::isolate`: best-effort cgroup v2 enter via `RBENCH_CGROUP` / `RBENCH_CGROUP_CPUS` / `RBENCH_CGROUP_MEMORY_MAX`; snapshot exposes cgroup path + cpu.max + memory.max; never claims BenchExec parity.
+- `budget` `groups` with `require: "all"` — conjunctive wall ∩ throughput ∩ RSS ship gates (`docs/examples/budgets-and.json`).
+- `examples/bakeoff.rs` + `docs/BAKEOFF.md` — quiet-host Criterion/Divan comparison protocol without default deps.

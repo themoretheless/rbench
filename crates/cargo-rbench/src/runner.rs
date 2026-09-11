@@ -509,9 +509,9 @@ pub fn run(mut plan: Plan, out: &Path) -> Result<Run> {
     if let Some(privacy) = &privacy {
         privacy.reject_literals(&result)?;
     }
-    write_new(&out.join("run.json"), &result)?;
+    publish::write_new_atomic(&out.join("run.json"), &result)?;
     let status = serde_json::json!({"state":result.status,"error":execution.as_ref().err().map(|e|e.to_string())});
-    write_new(&out.join("status-final.json"), &status)?;
+    publish::write_new_atomic(&out.join("status-final.json"), &status)?;
     execution?;
     result.validate()?;
     Ok(result)

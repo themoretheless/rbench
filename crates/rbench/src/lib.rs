@@ -1,11 +1,17 @@
 //! Benchmarks with explicit lifecycle, raw observations and offline analysis.
 //! No GPU, async runtime, network, or global allocator is installed implicitly.
+pub mod acceptance;
 pub mod alloc;
 pub mod analysis;
 pub mod budget;
 pub mod convenience;
 pub use convenience::{Fixture, Seeded, Selection};
 pub mod image;
+pub mod process;
+pub mod perf;
+pub mod callgrind;
+pub mod isolate;
+pub mod publish;
 pub mod scenario;
 pub use scenario::Recorder;
 pub mod model;
@@ -29,7 +35,7 @@ pub fn error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + S
 /// async fn implicit_runtime() {}
 /// ```
 #[cfg(feature = "macros")]
-pub use rbench_macros::bench;
+pub use rbench_macros::{bench, main};
 pub mod diagnostics;
 pub mod workloads;
 

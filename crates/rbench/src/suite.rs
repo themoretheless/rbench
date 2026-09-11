@@ -55,6 +55,10 @@ pub struct Suite<'a> {
     name: String,
     entries: Vec<Entry<'a>>,
     config: Config,
+    /// When true, sample OS RSS/CPU outside timed batches and attach process metrics.
+    process_metrics: bool,
+    /// Emit Linux perf instruction/cycle counts on sibling batches when available.
+    perf_counters: bool,
 }
 impl<'a> Suite<'a> {
     pub fn new(name: impl Into<String>) -> Self {
@@ -62,10 +66,23 @@ impl<'a> Suite<'a> {
             name: name.into(),
             entries: vec![],
             config: Config::default(),
+            process_metrics: false,
+            perf_counters: false,
         }
     }
     pub fn config(&mut self, config: Config) -> &mut Self {
         self.config = config;
+        self
+    }
+    /// Attach OS RSS peak and CPU deltas sampled outside timed batches.
+    pub fn process_metrics(&mut self, enabled: bool) -> &mut Self {
+        self.process_metrics = enabled;
+        self
+    }
+    /// Sample `perf.instructions` / `perf.cycles` on a sibling batch after each wall sample.
+    /// Unavailable/denied counters become Availability::Unsupported|PermissionDenied — never zeroes.
+    pub fn perf_counters(&mut self, enabled: bool) -> &mut Self {
+        self.perf_counters = enabled;
         self
     }
     pub fn bench<O: 'a>(&mut self, name: &str, mut f: impl FnMut() -> O + 'a) -> &mut Self {
@@ -78,6 +95,22 @@ impl<'a> Suite<'a> {
                 for _ in 0..n {
                     black_box(f());
                 }
+                start.elapsed().as_nanos()
+            }),
+        );
+        self
+    }
+    /// Tight batch path: caller owns the inner loop. Suite times one `f(n)` call
+    /// with a single `Instant`/`black_box` pair — Divan-competitive bookkeeping.
+    /// Prefer this over [`Self::bench`] when measuring sub-100ns useful work.
+    pub fn bench_batch<O: 'a>(&mut self, name: &str, mut f: impl FnMut(u64) -> O + 'a) -> &mut Self {
+        self.register(
+            name,
+            "caller-owned batch loop; single Instant around f(n); output drop included",
+            1_048_576,
+            Box::new(move |n| {
+                let start = Instant::now();
+                black_box(f(n));
                 start.elapsed().as_nanos()
             }),
         );
@@ -281,13 +314,28 @@ impl<'a> Suite<'a> {
             e.case.contract.insert(format!("tag.{tag}"), "true".into());
         }
     }
-    /// Positive work units per operation: e.g. bytes or elements. Throughput is derived in reports.
+    /// Positive work units per operation (e.g. bytes or elements).
+    /// Registers a first-class `throughput` metric (`Direction::Higher`) gateable via budgets.
     pub fn work_units(&mut self, unit: &str, count: u64) -> &mut Self {
+        if count == 0 || unit.is_empty() {
+            // validated again at run time; keep builder infallible for chaining
+        }
         if let Some(e) = self.entries.last_mut() {
             e.case.contract.insert("work.unit".into(), unit.into());
             e.case
                 .contract
                 .insert("work.count".into(), count.to_string());
+            let rate_unit = format!("{unit}/s");
+            if !e.case.metrics.iter().any(|m| m.id == "throughput") {
+                e.case.metrics.push(Metric::rate(
+                    "throughput",
+                    &rate_unit,
+                    "derived from wall batch and declared work units; not an independent clock",
+                    "batch_rate",
+                ));
+            } else if let Some(m) = e.case.metrics.iter_mut().find(|m| m.id == "throughput") {
+                m.unit = rate_unit;
+            }
         }
         self
     }
@@ -458,12 +506,122 @@ impl<'a> Suite<'a> {
                     operations: n,
                     availability: Availability::Available,
                 });
+                if let (Some(unit), Some(count)) = (
+                    e.case.contract.get("work.unit"),
+                    e.case
+                        .contract
+                        .get("work.count")
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .filter(|c| *c > 0),
+                ) {
+                    let _ = unit; // unit lives on the metric descriptor
+                    let rate = if elapsed > 0 {
+                        // work units per second from batch wall nanoseconds
+                        Some((count as f64 * n as f64 * 1_000_000_000.0) / elapsed as f64)
+                    } else {
+                        None
+                    };
+                    run.observations.push(Observation {
+                        case: e.case.id.clone(),
+                        metric: "throughput".into(),
+                        variant: "candidate".into(),
+                        process: 0,
+                        pair: None,
+                        sequence: sequence as u64,
+                        value: rate.map(|r| format!("{r:.6}")),
+                        operations: n,
+                        availability: if rate.is_some() {
+                            Availability::Available
+                        } else {
+                            Availability::Invalid("zero-duration batch; throughput undefined".into())
+                        },
+                    });
+                }
+            }
+            if self.perf_counters {
+                let probe = crate::perf::probe();
+                if let Some(c) = run.cases.last_mut() {
+                    for m in crate::perf::metrics() {
+                        if !c.metrics.iter().any(|x| x.id == m.id) {
+                            c.metrics.push(m);
+                        }
+                    }
+                }
+                match crate::perf::Counters::open() {
+                    Ok(counters) => {
+                        for sequence in 0..samples {
+                            let measured = counters.measure_counts(|| (e.work)(n));
+                            match measured {
+                                Ok((_elapsed, counts)) => {
+                                    run.observations.extend(crate::perf::observations(
+                                        &e.case.id,
+                                        "candidate",
+                                        0,
+                                        sequence as u64,
+                                        &counts,
+                                        &crate::Availability::Available,
+                                    ));
+                                }
+                                Err(err) => {
+                                    run.observations.extend(crate::perf::observations(
+                                        &e.case.id,
+                                        "candidate",
+                                        0,
+                                        sequence as u64,
+                                        &crate::perf::Counts::default(),
+                                        &crate::Availability::Invalid(err.to_string()),
+                                    ));
+                                }
+                            }
+                        }
+                        run.notes.push(format!(
+                            "{}: perf counters sampled on sibling batches after wall samples; counts include Suite timing bookkeeping inside work()",
+                            e.case.id
+                        ));
+                    }
+                    Err(_) => {
+                        run.observations.extend(crate::perf::observations(
+                            &e.case.id,
+                            "candidate",
+                            0,
+                            0,
+                            &crate::perf::Counts::default(),
+                            &probe.availability,
+                        ));
+                        run.notes.push(format!(
+                            "{}: perf counters unavailable: {}",
+                            e.case.id, probe.note
+                        ));
+                    }
+                }
             }
             if let Some(check) = &mut e.verify {
                 check().map_err(|err| error(format!("{} post-validation: {err}", e.case.id)))?;
             }
             if under_target && !cold {
                 run.notes.push(format!("{}: some samples below half the requested duration; iteration cap or workload drift may limit precision",e.case.id));
+            }
+            if self.process_metrics {
+                let mut tracker = crate::process::Tracker::begin();
+                tracker.poll();
+                let delta = tracker.finish();
+                if let Some(c) = run.cases.last_mut() {
+                    for m in crate::process::metrics() {
+                        if !c.metrics.iter().any(|x| x.id == m.id) {
+                            c.metrics.push(m);
+                        }
+                    }
+                }
+                run.observations.extend(crate::process::observations(
+                    &e.case.id,
+                    "candidate",
+                    0,
+                    &delta,
+                ));
+                run.notes.push(format!(
+                    "{}: OS process metrics sampled outside timed batches; RSS is not additive to GPU bytes on UMA",
+                    e.case.id
+                ));
             }
         }
         run.status = Status::Complete;

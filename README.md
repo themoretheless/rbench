@@ -6,7 +6,15 @@
 
 Добавлены ещё [20 возможностей рабочего цикла](docs/NEXT20.md): профили, Git-сравнение, `last`, dry-run, фильтры/теги, fixtures/фазы, throughput, seed, история, графики, экспорт/bundle, заметки и CI-политика.
 
-Следующая очередь: [оставшиеся 20 функций и порядок реализации](docs/FINAL20.md) — пока план.
+Закрыта очередь [FINAL20](docs/FINAL20.md). Hardening+next: OS RSS/CPU, atomic publish/recover, `accept`, first-class **throughput** gate metric (`work_units`), compare/list `--exact/--glob/--exclude/--tag`, `check --min`, Windows process providers, overhead example, CI smoke workflow.
+
+Compete slice: Linux `perf_event` counters (`Suite::perf_counters`), isolation snapshot/CPU pin (`rbench::isolate`, `RBENCH_PIN_CPU`), live `accept --hardware`, `cargo rbench compete` scorecard, [docs/COMPETE.md](docs/COMPETE.md), `examples/compete.rs`.
+
+Close-the-gaps: Callgrind adapter (`cargo rbench callgrind`), `Suite::bench_batch` + `#[rbench::main]`, hyperfine-class `cargo rbench time`.
+
+Isolation+AND: best-effort cgroup v2 (`RBENCH_CGROUP*`), conjunctive budget groups, `examples/bakeoff.rs` / `docs/BAKEOFF.md`.
+
+ Добавлены hardening-слои: OS RSS/CPU (`Suite::process_metrics` / `rbench::process`), атомарная публикация артефактов (`rbench::publish`), статистическая приёмка (`cargo rbench accept`), recover незавершённых run (`cargo rbench recover`), второй consumer `examples/tokenize`.
 
 ## Быстрый запуск
 
