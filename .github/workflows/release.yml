@@ -1,46 +1,26 @@
 name: Release
 
-# Cut a release by pushing a version tag:
+# Version-driven release via the org-wide reusable workflow.
 #
-#   git tag v0.1.1 && git push origin v0.1.1
+# To cut a release: bump the version in [workspace.package] of Cargo.toml and
+# merge to main. The shared workflow detects the version change, runs Clippy and
+# tests, then creates the v<version> tag and a GitHub Release with generated
+# notes. No secrets or crates.io token required (uses the built-in GITHUB_TOKEN).
 #
-# The tagged commit should already be on `main` and green in CI. On a v* tag this:
-#   1. verifies the tag matches the crate version in Cargo.toml;
-#   2. moves the `release` branch to the tagged commit, so other projects can
-#      depend on the latest RELEASED commit straight from Git:
-#        rbench = { git = "https://github.com/themoretheless/rbench", branch = "release" }
-#   3. creates a GitHub Release with auto-generated notes.
-#
-# No secrets required: it uses the built-in GITHUB_TOKEN (contents: write).
+# rustfmt is skipped (run_fmt: false): this repo is intentionally not
+# rustfmt-formatted. package_name selects the library from the multi-crate
+# workspace so the tag tracks rbench's version.
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
 
 permissions:
   contents: write
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   release:
-    name: Move release branch and publish a GitHub Release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Verify tag matches the crate version
-        run: |
-          tag="${GITHUB_REF_NAME#v}"
-          crate="$(cargo metadata --format-version 1 --no-deps \
-            | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="rbench"))')"
-          echo "tag=$tag crate=$crate"
-          test "$tag" = "$crate"
-      - name: Move the release branch to this tag
-        run: git push origin "${GITHUB_SHA}:refs/heads/release" --force
-      - name: Create the GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --generate-notes
+    uses: themoretheless/.github/.github/workflows/release-rust-library.yml@d66cd190a0d7a8b45f909dfa97597be34ec93f1f
+    with:
+      package_name: rbench
+      rust_toolchain: stable
+      run_fmt: false

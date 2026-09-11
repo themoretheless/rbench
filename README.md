@@ -32,29 +32,28 @@ cargo rbench report .rbench/sort -o .rbench/sort.html
 Подключение в другой проект — напрямую из Git (crates.io не нужен). Cargo фиксирует выбранный коммит в `Cargo.lock`; обновление — по `cargo update`:
 
 ```toml
-# всегда последняя ВЫПУЩЕННАЯ версия: ветка release двигается на каждый тег v*
-rbench = { git = "https://github.com/themoretheless/rbench", branch = "release" }
-# жёстко закреплённая версия
+# закреплённая выпущенная версия (теги v* создаются автоматически при бампе версии)
 rbench = { git = "https://github.com/themoretheless/rbench", tag = "v0.1.0" }
-# последний коммit ветки по умолчанию (main), включая незарелиженные изменения
+# последний коммит ветки по умолчанию (main), включая незарелиженные изменения
 rbench = { git = "https://github.com/themoretheless/rbench" }
+# опциональные возможности:
+# rbench = { git = "…", tag = "v0.1.0", features = ["macros", "memory"] }
 ```
 
-Cargo не выбирает «самый свежий семвер-тег» из git: диапазоны вроде `rbench = "0.1"` работают только через реестр. «Latest из репы» — это движущаяся ветка (`release`), а точные версии — теги.
+Cargo не выбирает «самый свежий семвер-тег» из git: диапазоны вроде `rbench = "0.1"` работают только через реестр. Точные версии — это теги `v*`, а «просто latest» — ветка `main`.
 
 Локальный checkout: `rbench = { path = "/path/to/rbench/crates/rbench" }`. Для Cargo benchmark target задайте `harness = false`.
 
 ### Как выпускать релиз
 
-Разработка идёт в feature-ветках → PR → merge в `main`; каждый PR/пуш проверяет [`ci.yml`](.github/workflows/ci.yml) (build/test/Clippy `-D warnings` + MSRV 1.85), поэтому `main` остаётся релизным. Когда готов релиз — на зелёном коммите `main`:
+Релиз управляется версией. Разработка идёт в feature-ветках → PR → merge в `main`; каждый PR/пуш проверяет [`ci.yml`](.github/workflows/ci.yml) (build/test/Clippy `-D warnings` + MSRV 1.85), поэтому `main` остаётся релизным. Чтобы выпустить релиз, достаточно поднять версию:
 
 ```sh
-# при необходимости поднимите версию в [workspace.package] Cargo.toml, закоммитьте в main
-git tag v0.1.1
-git push origin v0.1.1
+# поднимите version в [workspace.package] у Cargo.toml (например 0.1.0 -> 0.1.1),
+# закоммитьте и слейте в main
 ```
 
-Пуш тега запускает [`release.yml`](.github/workflows/release.yml), который: (1) проверяет, что тег совпадает с версией крейта в `Cargo.toml`; (2) переводит ветку `release` на этот коммит; (3) создаёт GitHub Release с авто-заметками. Секреты не нужны — используется встроенный `GITHUB_TOKEN`. В `release` попадает ровно то, что помечено тегом; промежуточные коммиты `main` туда не утекают.
+Пуш в `main` запускает [`release.yml`](.github/workflows/release.yml) — тонкую обёртку над общим reusable-workflow `themoretheless/.github/.github/workflows/release-rust-library.yml`. Он сравнивает версию `rbench` в `Cargo.toml` до/после пуша и, если она изменилась: гоняет Clippy и тесты, затем создаёт тег `v<version>` и GitHub Release с авто-заметками. Секреты не нужны — используется встроенный `GITHUB_TOKEN` (rustfmt отключён: `run_fmt: false`). Если версия не менялась, релиз не создаётся.
 
 ```rust
 use rbench::{DropPolicy, Suite};
