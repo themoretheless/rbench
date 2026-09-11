@@ -236,7 +236,74 @@ fn sample_impl() -> Result<Sample> {
     })
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+fn sample_impl() -> Result<Sample> {
+    // Working-set + kernel/user times via Win32. Values are process-scoped and
+    // must not be added to GPU payload bytes on UMA/dGPU shared systems either.
+    use std::mem::{size_of, zeroed};
+    #[repr(C)]
+    struct ProcessMemoryCounters {
+        cb: u32,
+        page_fault_count: u32,
+        peak_working_set_size: usize,
+        working_set_size: usize,
+        quota_peak_paged_pool_usage: usize,
+        quota_paged_pool_usage: usize,
+        quota_peak_non_paged_pool_usage: usize,
+        quota_non_paged_pool_usage: usize,
+        pagefile_usage: usize,
+        peak_pagefile_usage: usize,
+    }
+    #[repr(C)]
+    struct FileTime {
+        lo: u32,
+        hi: u32,
+    }
+    #[link(name = "psapi")]
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentProcess() -> *mut core::ffi::c_void;
+        fn GetProcessMemoryInfo(
+            process: *mut core::ffi::c_void,
+            counters: *mut ProcessMemoryCounters,
+            cb: u32,
+        ) -> i32;
+        fn GetProcessTimes(
+            process: *mut core::ffi::c_void,
+            creation: *mut FileTime,
+            exit: *mut FileTime,
+            kernel: *mut FileTime,
+            user: *mut FileTime,
+        ) -> i32;
+    }
+    unsafe {
+        let handle = GetCurrentProcess();
+        let mut mem: ProcessMemoryCounters = zeroed();
+        mem.cb = size_of::<ProcessMemoryCounters>() as u32;
+        if GetProcessMemoryInfo(handle, &mut mem, mem.cb) == 0 {
+            return Err(error("GetProcessMemoryInfo failed"));
+        }
+        let mut creation: FileTime = zeroed();
+        let mut exit: FileTime = zeroed();
+        let mut kernel: FileTime = zeroed();
+        let mut user: FileTime = zeroed();
+        if GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) == 0 {
+            return Err(error("GetProcessTimes failed"));
+        }
+        let ft_ns = |t: FileTime| -> u64 {
+            let ticks = ((t.hi as u64) << 32) | t.lo as u64;
+            // FILETIME is 100ns units.
+            ticks.saturating_mul(100)
+        };
+        Ok(Sample {
+            rss_bytes: Some(mem.working_set_size as u64),
+            user_cpu_ns: Some(ft_ns(user)),
+            system_cpu_ns: Some(ft_ns(kernel)),
+        })
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn sample_impl() -> Result<Sample> {
     Err(error(format!(
         "OS process metrics unsupported on {}",

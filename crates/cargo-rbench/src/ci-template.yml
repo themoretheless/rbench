@@ -6,25 +6,25 @@ permissions:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       # Template assumes this rbench workspace. For another repository, install a pinned CLI first.
       - run: cargo install --path crates/cargo-rbench --locked
-      - run: cargo rbench bench --repetitions 3 -o .rbench/ci -- --profile quick
-      - name: Offline reports
-        shell: bash
-        run: |
-          for run in .rbench/ci/*/run.json; do
-            cargo rbench report "$run" -o "${run%/run.json}/report.html"
-          done
-      - uses: actions/upload-artifact@v7
+      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo rbench accept --seed 7 -o .rbench/accept.json
+      - run: cargo rbench doctor
+      # Shared hosted runners give smoke evidence, not controlled regression evidence.
+      # Add 'cargo rbench gate RUN --config budgets.json' for project-specific absolute budgets,
+      # including throughput minima (Direction::Higher / budget.min).
+      - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: rbench-results
-          path: .rbench/ci
+          path: .rbench
           include-hidden-files: true
           if-no-files-found: warn
-      # Shared hosted runners give smoke evidence, not controlled regression evidence.
-      # Add 'cargo rbench gate RUN --config budgets.json' for project-specific absolute budgets.

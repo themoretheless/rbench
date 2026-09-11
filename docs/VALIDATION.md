@@ -96,3 +96,13 @@ Implemented and checked in this workspace (not a substitute for macOS/Metal Form
 - Portability: validated here on Linux + MSRV toolchain 1.85.0. Windows providers remain unsupported (explicit error). Remote CI of generated workflow still not executed.
 
 Workspace tests: library unit tests for process/acceptance/publish + existing contracts/CLI suite green under `--offline`.
+
+## Next slice 2026-09-11
+
+- Throughput is a first-class `Direction::Higher` observation when `work_units` is set; budgets may use `min` / relative regression.
+- `cargo rbench compare|list` support `--exact/--glob/--exclude/--tag` (same Selection rules as Suite).
+- `cargo rbench check --min` for Higher metrics.
+- Windows RSS/CPU via GetProcessMemoryInfo/GetProcessTimes (compile-time; not runtime-validated here).
+- `examples/overhead` handwritten vs Suite fixed-batch diagnostic.
+- `.github/workflows/rbench-smoke.yml` runs test/clippy/accept/doctor/overhead.
+- Accept battery includes heteroscedastic coverage regime.

@@ -1,0 +1,33 @@
+name: rbench smoke
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+        with:
+          components: clippy
+      - name: Build & test
+        run: cargo test --workspace --offline || cargo test --workspace
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Accept battery
+        run: cargo run -p cargo-rbench -- accept --seed 7 -o accept.json
+      - name: Doctor
+        run: cargo run -p cargo-rbench -- doctor
+      - name: Overhead diagnostic
+        run: cargo run -p rbench --example overhead --release
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rbench-accept
+          path: accept.json
+          if-no-files-found: warn

@@ -255,13 +255,14 @@ pub fn battery(seed: u64) -> Result<serde_json::Value> {
     let coverage_iid = monte_carlo_coverage(Regime::IidUniform, 40, 400, 0.05, seed)?;
     let coverage_ar1 = monte_carlo_coverage(Regime::Ar1, 40, 200, 0.05, seed ^ 1)?;
     let coverage_drift = monte_carlo_coverage(Regime::LinearDrift, 40, 200, 0.05, seed ^ 2)?;
+    let coverage_het = monte_carlo_coverage(Regime::Heteroscedastic, 40, 200, 0.05, seed ^ 4)?;
     let aa = aa_false_positive_rate(12, 200, 5.0, 0.05, seed ^ 3)?;
     Ok(serde_json::json!({
         "schema": 1,
         "seed": seed,
-        "coverage": [coverage_iid, coverage_ar1, coverage_drift],
+        "coverage": [coverage_iid, coverage_ar1, coverage_drift, coverage_het],
         "aa_false_positive": aa,
-        "interpretation": "IID coverage should sit near 1-alpha. Ar1/drift under-coverage demonstrates why confirmatory analysis assumes independent process pairs. A/A FPR is descriptive for this synthetic battery only."
+        "interpretation": "IID coverage should sit near 1-alpha. Ar1/drift/heteroscedastic under-coverage demonstrates why confirmatory analysis assumes independent process pairs with stable noise. A/A FPR is descriptive for this synthetic battery only."
     }))
 }
 

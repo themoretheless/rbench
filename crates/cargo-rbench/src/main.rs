@@ -311,18 +311,33 @@ enum Action {
         check: bool,
         #[arg(long, default_value = "")]
         filter: String,
+        /// Exact case-id match (mutually exclusive with --glob).
+        #[arg(long)]
+        exact: bool,
+        /// Glob case-id match (*, ?); mutually exclusive with --exact.
+        #[arg(long)]
+        glob: bool,
+        /// Glob patterns to exclude (repeatable).
+        #[arg(long)]
+        exclude: Vec<String>,
+        /// Require contract tag.NAME=true (repeatable; AND).
+        #[arg(long)]
+        tag: Vec<String>,
         #[arg(long, default_value = "")]
         metric: String,
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    /// Check every available observation against an absolute maximum (no statistical inference).
+    /// Check every available observation against an absolute maximum and optional minimum (no statistical inference).
     Check {
         run: PathBuf,
         #[arg(long)]
         metric: String,
         #[arg(long)]
-        max: f64,
+        max: Option<f64>,
+        /// Absolute lower bound (useful for Higher metrics such as throughput).
+        #[arg(long)]
+        min: Option<f64>,
     },
     /// Import completed legacy Forma offscreen or paired directories.
     ImportForma {
@@ -350,6 +365,14 @@ enum Action {
         run: PathBuf,
         #[arg(long, default_value = "")]
         filter: String,
+        #[arg(long)]
+        exact: bool,
+        #[arg(long)]
+        glob: bool,
+        #[arg(long)]
+        exclude: Vec<String>,
+        #[arg(long)]
+        tag: Vec<String>,
     },
     /// Build benchmark executables without measuring (for project harness=false benches).
     Build {
@@ -393,6 +416,29 @@ fn output(text: &str, path: Option<PathBuf>) -> Result<()> {
     }
     Ok(())
 }
+
+fn select_cases(
+    run: &mut Run,
+    filter: &str,
+    exact: bool,
+    glob_mode: bool,
+    exclude: &[String],
+    tags: &[String],
+) -> Result<()> {
+    let selection = Selection {
+        pattern: filter.into(),
+        exact,
+        glob: glob_mode,
+        exclude: exclude.to_vec(),
+        tags: tags.to_vec(),
+    };
+    selection.validate()?;
+    run.cases.retain(|c| selection.matches(c));
+    run.observations
+        .retain(|o| run.cases.iter().any(|c| c.id == o.case));
+    Ok(())
+}
+
 fn execute() -> Result<i32> {
     let mut args: Vec<_> = std::env::args_os().collect();
     if args.get(1).is_some_and(|x| x == "rbench") {
@@ -674,11 +720,11 @@ fn execute() -> Result<i32> {
                 Some("html")=>doc.html()?,Some("json")=>serde_json::to_string_pretty(&doc)?,Some("md")|None=>doc.markdown()?,_=>return Err(error("report output extension must be .html, .json or .md"))
             };output(&text,path)?;
         }
-        Action::List { run, filter } => {
-            for c in load(run)?.cases {
-                if c.id.contains(&filter) {
-                    println!("{}", c.id);
-                }
+        Action::List { run, filter, exact, glob, exclude, tag } => {
+            let mut r = load(run)?;
+            select_cases(&mut r, &filter, exact, glob, &exclude, &tag)?;
+            for c in r.cases {
+                println!("{}", c.id);
             }
         }
         Action::Compare {
@@ -690,11 +736,15 @@ fn execute() -> Result<i32> {
             uncertainty,
             check,
             filter,
+            exact,
+            glob,
+            exclude,
+            tag,
             metric,
             output: path,
         } => {
             let select = |mut r: Run| -> Result<Run> {
-                r.cases.retain(|c| c.id.contains(&filter));
+                select_cases(&mut r, &filter, exact, glob, &exclude, &tag)?;
                 for c in &mut r.cases {
                     c.metrics.retain(|m| m.id.contains(&metric));
                 }
@@ -704,6 +754,9 @@ fn execute() -> Result<i32> {
                         .iter()
                         .any(|c| c.id == o.case && c.metrics.iter().any(|m| m.id == o.metric))
                 });
+                if r.cases.is_empty() {
+                    return Err(error("filter matched no cases/metrics"));
+                }
                 r.validate()?;
                 Ok(r)
             };
@@ -746,9 +799,17 @@ fn execute() -> Result<i32> {
                 return Err(error("Cargo benchmark build failed"));
             }
         }
-        Action::Check { run, metric, max } => {
-            if !max.is_finite() || max < 0.0 {
-                return Err(error("--max must be finite and nonnegative"));
+        Action::Check { run, metric, max, min } => {
+            if max.is_none() && min.is_none() {
+                return Err(error("check requires --max and/or --min"));
+            }
+            if max.is_some_and(|v| !v.is_finite() || v < 0.0) || min.is_some_and(|v| !v.is_finite() || v < 0.0) {
+                return Err(error("--max/--min must be finite and nonnegative"));
+            }
+            if let (Some(lo), Some(hi)) = (min, max) {
+                if lo > hi {
+                    return Err(error("--min cannot exceed --max"));
+                }
             }
             let run = load(run)?;
             if run.status != Status::Complete {
@@ -765,18 +826,22 @@ fn execute() -> Result<i32> {
                     .cases
                     .iter()
                     .find(|c| c.id == o.case)
-                    .unwrap()
-                    .metrics
-                    .iter()
-                    .find(|m| m.id == metric)
-                    .unwrap();
+                    .and_then(|c| c.metrics.iter().find(|m| m.id == metric))
+                    .ok_or_else(|| error("metric descriptor missing for observation"))?;
                 if m.statistic == "batch_total" {
                     value /= o.operations as f64;
                 }
-                if value > max {
+                if max.is_some_and(|hi| value > hi) {
                     eprintln!(
-                        "{} {} process {}: {value} {} > {max}",
-                        o.case, o.variant, o.process, m.unit
+                        "{} {} process {}: {value} {} > max {}",
+                        o.case, o.variant, o.process, m.unit, max.unwrap()
+                    );
+                    failed = true;
+                }
+                if min.is_some_and(|lo| value < lo) {
+                    eprintln!(
+                        "{} {} process {}: {value} {} < min {}",
+                        o.case, o.variant, o.process, m.unit, min.unwrap()
                     );
                     failed = true;
                 }
@@ -784,7 +849,9 @@ fn execute() -> Result<i32> {
             if count == 0 {
                 return Err(error("metric not found"));
             }
-            println!("Checked {count} observations; absolute max {max}. This is a budget check, not a statistical comparison.");
+            println!(
+                "Checked {count} observations; absolute bounds max={max:?} min={min:?}. This is a budget check, not a statistical comparison."
+            );
             if failed {
                 return Ok(1);
             }

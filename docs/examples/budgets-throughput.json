@@ -1,0 +1,16 @@
+{
+  "budgets": [
+    {
+      "case": "tokenize/jsonish/32",
+      "metric": "wall",
+      "unit": "ns",
+      "max": 5000000
+    },
+    {
+      "case": "tokenize/jsonish/32",
+      "metric": "throughput",
+      "unit": "bytes/s",
+      "min": 1000000
+    }
+  ]
+}

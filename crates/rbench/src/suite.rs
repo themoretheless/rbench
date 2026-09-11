@@ -289,13 +289,28 @@ impl<'a> Suite<'a> {
             e.case.contract.insert(format!("tag.{tag}"), "true".into());
         }
     }
-    /// Positive work units per operation: e.g. bytes or elements. Throughput is derived in reports.
+    /// Positive work units per operation (e.g. bytes or elements).
+    /// Registers a first-class `throughput` metric (`Direction::Higher`) gateable via budgets.
     pub fn work_units(&mut self, unit: &str, count: u64) -> &mut Self {
+        if count == 0 || unit.is_empty() {
+            // validated again at run time; keep builder infallible for chaining
+        }
         if let Some(e) = self.entries.last_mut() {
             e.case.contract.insert("work.unit".into(), unit.into());
             e.case
                 .contract
                 .insert("work.count".into(), count.to_string());
+            let rate_unit = format!("{unit}/s");
+            if !e.case.metrics.iter().any(|m| m.id == "throughput") {
+                e.case.metrics.push(Metric::rate(
+                    "throughput",
+                    &rate_unit,
+                    "derived from wall batch and declared work units; not an independent clock",
+                    "batch_rate",
+                ));
+            } else if let Some(m) = e.case.metrics.iter_mut().find(|m| m.id == "throughput") {
+                m.unit = rate_unit;
+            }
         }
         self
     }
@@ -466,6 +481,37 @@ impl<'a> Suite<'a> {
                     operations: n,
                     availability: Availability::Available,
                 });
+                if let (Some(unit), Some(count)) = (
+                    e.case.contract.get("work.unit"),
+                    e.case
+                        .contract
+                        .get("work.count")
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .filter(|c| *c > 0),
+                ) {
+                    let _ = unit; // unit lives on the metric descriptor
+                    let rate = if elapsed > 0 {
+                        // work units per second from batch wall nanoseconds
+                        Some((count as f64 * n as f64 * 1_000_000_000.0) / elapsed as f64)
+                    } else {
+                        None
+                    };
+                    run.observations.push(Observation {
+                        case: e.case.id.clone(),
+                        metric: "throughput".into(),
+                        variant: "candidate".into(),
+                        process: 0,
+                        pair: None,
+                        sequence: sequence as u64,
+                        value: rate.map(|r| format!("{r:.6}")),
+                        operations: n,
+                        availability: if rate.is_some() {
+                            Availability::Available
+                        } else {
+                            Availability::Invalid("zero-duration batch; throughput undefined".into())
+                        },
+                    });
+                }
             }
             if let Some(check) = &mut e.verify {
                 check().map_err(|err| error(format!("{} post-validation: {err}", e.case.id)))?;
