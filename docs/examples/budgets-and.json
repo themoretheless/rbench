@@ -1,0 +1,33 @@
+{
+  "budgets": [
+    {
+      "case": "mix64_batch",
+      "metric": "wall",
+      "unit": "ns",
+      "max": 500000
+    },
+    {
+      "case": "mix64_batch",
+      "metric": "throughput",
+      "unit": "ops/s",
+      "min": 1000
+    },
+    {
+      "case": "mix64_batch",
+      "metric": "os.rss_peak",
+      "unit": "bytes",
+      "max": 67108864
+    }
+  ],
+  "groups": [
+    {
+      "id": "ship",
+      "require": "all",
+      "members": [
+        { "case": "mix64_batch", "metric": "wall" },
+        { "case": "mix64_batch", "metric": "throughput" },
+        { "case": "mix64_batch", "metric": "os.rss_peak" }
+      ]
+    }
+  ]
+}

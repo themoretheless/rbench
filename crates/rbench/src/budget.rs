@@ -1,11 +1,18 @@
 //! Declarative exact-case budgets. Missing metrics and uncertainty never silently pass.
+//!
+//! Optional `groups` require **all** member budgets to pass (wall ∩ throughput ∩ RSS).
 use crate::{analysis, error, Result, Run, Status};
 use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BudgetFile {
     pub budgets: Vec<Budget>,
+    /// Conjunctive gates over already-declared budgets (AND). Empty by default.
+    #[serde(default)]
+    pub groups: Vec<BudgetGroup>,
 }
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Budget {
@@ -16,6 +23,28 @@ pub struct Budget {
     pub min: Option<f64>,
     pub max_regression_percent: Option<f64>,
 }
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BudgetGroup {
+    pub id: String,
+    /// Only `"all"` is supported (AND). Present for forward-compatible schemas.
+    #[serde(default = "require_all")]
+    pub require: String,
+    pub members: Vec<BudgetRef>,
+}
+
+fn require_all() -> String {
+    "all".into()
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BudgetRef {
+    pub case: String,
+    pub metric: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct Outcome {
     pub case: String,
@@ -23,6 +52,7 @@ pub struct Outcome {
     pub decision: String,
     pub detail: String,
 }
+
 fn select(run: &Run, case: &str, metric: &str) -> Result<Run> {
     let mut r = run.clone();
     r.cases.retain(|c| c.id == case);
@@ -34,6 +64,7 @@ fn select(run: &Run, case: &str, metric: &str) -> Result<Run> {
     r.validate()?;
     Ok(r)
 }
+
 pub fn evaluate(config: &BudgetFile, run: &Run, baseline: Option<&Run>) -> Result<Vec<Outcome>> {
     run.validate()?;
     if run.status != Status::Complete {
@@ -139,8 +170,95 @@ pub fn evaluate(config: &BudgetFile, run: &Run, baseline: Option<&Run>) -> Resul
             detail,
         });
     }
+    out.extend(evaluate_groups(config, &out)?);
     Ok(out)
 }
+
+fn evaluate_groups(config: &BudgetFile, rows: &[Outcome]) -> Result<Vec<Outcome>> {
+    let mut group_ids = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for g in &config.groups {
+        if !group_ids.insert(g.id.as_str()) {
+            return Err(error(format!("duplicate budget group id '{}'", g.id)));
+        }
+        if g.require != "all" {
+            return Err(error(format!(
+                "budget group '{}': only require=\"all\" (AND) is supported",
+                g.id
+            )));
+        }
+        if g.members.is_empty() {
+            return Err(error(format!(
+                "budget group '{}' has no members",
+                g.id
+            )));
+        }
+        let mut member_rows = Vec::new();
+        for m in &g.members {
+            let row = rows
+                .iter()
+                .find(|r| r.case == m.case && r.metric == m.metric)
+                .ok_or_else(|| {
+                    error(format!(
+                        "budget group '{}': member {}/{} is not declared in budgets",
+                        g.id, m.case, m.metric
+                    ))
+                })?;
+            member_rows.push(row);
+        }
+        let failed = member_rows.iter().any(|r| r.decision == "failed");
+        let unavailable = member_rows.iter().any(|r| r.decision == "unavailable");
+        let inconclusive = member_rows.iter().any(|r| r.decision == "inconclusive");
+        let (decision, detail) = if failed {
+            (
+                "failed".into(),
+                format!(
+                    "AND group failed; members: {}",
+                    member_summary(&member_rows)
+                ),
+            )
+        } else if unavailable {
+            (
+                "unavailable".into(),
+                format!(
+                    "AND group unavailable; members: {}",
+                    member_summary(&member_rows)
+                ),
+            )
+        } else if inconclusive {
+            (
+                "inconclusive".into(),
+                format!(
+                    "AND group inconclusive; members: {}",
+                    member_summary(&member_rows)
+                ),
+            )
+        } else {
+            (
+                "passed".into(),
+                format!(
+                    "AND group passed; members: {}",
+                    member_summary(&member_rows)
+                ),
+            )
+        };
+        out.push(Outcome {
+            case: g.id.clone(),
+            metric: "group".into(),
+            decision,
+            detail,
+        });
+    }
+    Ok(out)
+}
+
+fn member_summary(rows: &[&Outcome]) -> String {
+    rows.iter()
+        .map(|r| format!("{}/{}={}", r.case, r.metric, r.decision))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub fn exit_code(rows: &[Outcome]) -> i32 {
     if rows.iter().any(|r| r.decision == "failed") {
         1
@@ -148,5 +266,99 @@ pub fn exit_code(rows: &[Outcome]) -> i32 {
         2
     } else {
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        Availability, Case, Direction, Metric, Observation, Run, Status,
+    };
+    use std::collections::BTreeMap;
+
+    fn run_with(wall: f64, thr: f64, rss: f64) -> Run {
+        let mut run = Run::new();
+        run.status = Status::Complete;
+        run.cases.push(Case {
+            id: "ship".into(),
+            contract: BTreeMap::new(),
+            metrics: vec![
+                Metric {
+                    id: "wall".into(),
+                    unit: "ns".into(),
+                    scope: "test".into(),
+                    phase: "measurement".into(),
+                    statistic: "sample".into(),
+                    direction: Direction::Lower,
+                },
+                Metric {
+                    id: "throughput".into(),
+                    unit: "ops/s".into(),
+                    scope: "test".into(),
+                    phase: "measurement".into(),
+                    statistic: "sample".into(),
+                    direction: Direction::Higher,
+                },
+                Metric {
+                    id: "os.rss_peak".into(),
+                    unit: "bytes".into(),
+                    scope: "test".into(),
+                    phase: "measurement".into(),
+                    statistic: "sample".into(),
+                    direction: Direction::Lower,
+                },
+            ],
+        });
+        for (metric, value) in [
+            ("wall", wall),
+            ("throughput", thr),
+            ("os.rss_peak", rss),
+        ] {
+            run.observations.push(Observation {
+                case: "ship".into(),
+                metric: metric.into(),
+                variant: "candidate".into(),
+                process: 0,
+                pair: None,
+                sequence: 0,
+                value: Some(value.to_string()),
+                operations: 1,
+                availability: Availability::Available,
+            });
+        }
+        run
+    }
+
+    #[test]
+    fn and_group_requires_all_members() {
+        let config: BudgetFile = serde_json::from_str(
+            r#"{
+              "budgets": [
+                {"case":"ship","metric":"wall","unit":"ns","max":100},
+                {"case":"ship","metric":"throughput","unit":"ops/s","min":10},
+                {"case":"ship","metric":"os.rss_peak","unit":"bytes","max":1000}
+              ],
+              "groups": [{
+                "id": "ship_gate",
+                "require": "all",
+                "members": [
+                  {"case":"ship","metric":"wall"},
+                  {"case":"ship","metric":"throughput"},
+                  {"case":"ship","metric":"os.rss_peak"}
+                ]
+              }]
+            }"#,
+        )
+        .unwrap();
+        let ok = evaluate(&config, &run_with(50.0, 20.0, 500.0), None).unwrap();
+        let group = ok.iter().find(|r| r.metric == "group").unwrap();
+        assert_eq!(group.decision, "passed");
+        assert_eq!(exit_code(&ok), 0);
+
+        let bad = evaluate(&config, &run_with(50.0, 2.0, 500.0), None).unwrap();
+        let group = bad.iter().find(|r| r.metric == "group").unwrap();
+        assert_eq!(group.decision, "failed");
+        assert_eq!(exit_code(&bad), 1);
     }
 }

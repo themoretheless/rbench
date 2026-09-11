@@ -1056,8 +1056,9 @@ fn execute() -> Result<i32> {
             let snap = rbench::isolate::snapshot();
             let warnings = rbench::isolate::noise_warnings(&snap);
             let pin = std::env::var("RBENCH_PIN_CPU").unwrap_or_else(|_| "(unset)".into());
+            let cgroup_env = std::env::var("RBENCH_CGROUP").unwrap_or_else(|_| "(unset)".into());
             println!(
-                "rbench {}\nOS: {}\nArch: {}\nClock: std::time::Instant\nProcess tree cleanup: {}\nOS RSS/CPU providers: {}\nperf_event: {:?} — {}\ncallgrind: {:?} — {}\nIsolation snapshot: loadavg_1={:?} governor={:?} freq_khz={:?} pinned={:?}\nNoise warnings: {}\nRBENCH_PIN_CPU: {}\nGPU: supplied by scenario (not probed)\nWindow: supplied by scenario (not probed)\nIsolation: local runner lease + optional CPU pin (not BenchExec)\nStatistics: independent process units required\nAtomic publish: rename+fsync staging\nAccept: cargo rbench accept --seed N [--hardware]\nCallgrind: cargo rbench callgrind --program PATH\nTime: cargo rbench time --runs N -- CMD\nCompete: cargo rbench compete",
+                "rbench {}\nOS: {}\nArch: {}\nClock: std::time::Instant\nProcess tree cleanup: {}\nOS RSS/CPU providers: {}\nperf_event: {:?} — {}\ncallgrind: {:?} — {}\nIsolation snapshot: loadavg_1={:?} governor={:?} freq_khz={:?} pinned={:?}\ncgroup: path={:?} cpu.max={:?} memory.max={:?}\nNoise warnings: {}\nRBENCH_PIN_CPU: {}\nRBENCH_CGROUP: {}\nGPU: supplied by scenario (not probed)\nWindow: supplied by scenario (not probed)\nIsolation: local runner lease + optional CPU pin + best-effort cgroup v2 (not BenchExec)\nStatistics: independent process units required\nAtomic publish: rename+fsync staging\nAccept: cargo rbench accept --seed N [--hardware]\nCallgrind: cargo rbench callgrind --program PATH\nTime: cargo rbench time --runs N -- CMD\nCompete: cargo rbench compete",
                 env!("CARGO_PKG_VERSION"),
                 std::env::consts::OS,
                 std::env::consts::ARCH,
@@ -1075,12 +1076,16 @@ fn execute() -> Result<i32> {
                 snap.cpu_governor,
                 snap.cpu_freq_khz,
                 snap.pinned_cpu,
+                snap.cgroup_path,
+                snap.cgroup_cpu_max,
+                snap.cgroup_memory_max,
                 if warnings.is_empty() {
                     "none".into()
                 } else {
                     warnings.join("; ")
                 },
-                pin
+                pin,
+                cgroup_env
             );
         }
         Action::Compete { output } => {

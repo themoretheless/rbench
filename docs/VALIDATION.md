@@ -121,4 +121,10 @@ Workspace tests: library unit tests for process/acceptance/publish + existing co
 - `Suite::bench_batch` + `#[rbench::bench]` / `#[rbench::main]`: Divan-competitive hot-loop ergonomics / bookkeeping.
 - `cargo rbench time`: hyperfine-class command wall timing (blocking wait, warmup/runs/shell/prepare/cleanup, markdown/json + optional Run).
 - Scorecard Trails removed: hot-loop Competitive/Lead, Callgrind Lead (tied), command timing Lead/Competitive.
-- Still open: cgroup isolation, published Criterion/Divan quiet-host bake-off numbers, Forma window/Metal goldens.
+- Still open: published Criterion/Divan quiet-host numbers checked into docs after a dedicated quiet run, Forma window/Metal goldens.
+
+## Isolation + AND gates slice 2026-09-11
+
+- `rbench::isolate`: best-effort cgroup v2 enter via `RBENCH_CGROUP` / `RBENCH_CGROUP_CPUS` / `RBENCH_CGROUP_MEMORY_MAX`; snapshot exposes cgroup path + cpu.max + memory.max; never claims BenchExec parity.
+- `budget` `groups` with `require: "all"` — conjunctive wall ∩ throughput ∩ RSS ship gates (`docs/examples/budgets-and.json`).
+- `examples/bakeoff.rs` + `docs/BAKEOFF.md` — quiet-host Criterion/Divan comparison protocol without default deps.

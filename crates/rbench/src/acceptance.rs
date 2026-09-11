@@ -339,6 +339,15 @@ pub fn hardware_aa(
         ));
     }
     let _pin = crate::isolate::apply_env_pin().ok().flatten();
+    let cgroup = crate::isolate::apply_env_cgroup().unwrap_or_else(|e| {
+        crate::isolate::CgroupReport {
+            applied: false,
+            path: None,
+            cpus: None,
+            memory_max: None,
+            note: format!("cgroup apply error: {e}"),
+        }
+    });
     let snap = crate::isolate::snapshot();
     let warnings = crate::isolate::noise_warnings(&snap);
     let mut false_reg = 0usize;
@@ -375,6 +384,7 @@ pub fn hardware_aa(
             "snapshot": snap,
             "warnings": warnings,
             "pinned_cpu_env": std::env::var("RBENCH_PIN_CPU").ok(),
+            "cgroup": cgroup,
         }),
         note: "Live Instant A/A on current host. Shared CI runners remain smoke-only; treat elevated FPR as host noise, not library failure.".into(),
     })

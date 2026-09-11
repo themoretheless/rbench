@@ -12,6 +12,8 @@ Compete slice: Linux `perf_event` counters (`Suite::perf_counters`), isolation s
 
 Close-the-gaps: Callgrind adapter (`cargo rbench callgrind`), `Suite::bench_batch` + `#[rbench::main]`, hyperfine-class `cargo rbench time`.
 
+Isolation+AND: best-effort cgroup v2 (`RBENCH_CGROUP*`), conjunctive budget groups, `examples/bakeoff.rs` / `docs/BAKEOFF.md`.
+
  Добавлены hardening-слои: OS RSS/CPU (`Suite::process_metrics` / `rbench::process`), атомарная публикация артефактов (`rbench::publish`), статистическая приёмка (`cargo rbench accept`), recover незавершённых run (`cargo rbench recover`), второй consumer `examples/tokenize`.
 
 ## Быстрый запуск

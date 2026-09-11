@@ -1,5 +1,7 @@
 # Реализация и проверка
 
+Isolation+AND gates 2026-09-11: cgroup v2 best-effort (`RBENCH_CGROUP*`); budget `groups` require-all (wall∩throughput∩RSS); `examples/bakeoff.rs` + `docs/BAKEOFF.md`.
+
 Close-the-gaps 2026-09-11: Callgrind adapter (`rbench::callgrind` / `cargo rbench callgrind`); `Suite::bench_batch` + `#[rbench::main]`; hyperfine-class `cargo rbench time`; scorecard Trails closed.
 
 Compete slice 2026-09-11: Linux perf_event instructions/cycles; isolation snapshot + optional CPU pin; `accept --hardware` live Instant A/A; `cargo rbench compete` honest scorecard vs Criterion/Divan/iai/hyperfine; `docs/COMPETE.md`; `examples/compete.rs`.

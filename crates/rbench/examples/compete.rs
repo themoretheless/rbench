@@ -18,7 +18,16 @@ fn mix64(n: u64) -> u64 {
 }
 
 fn main() -> rbench::Result<()> {
-    let _pin = rbench::isolate::apply_env_pin().ok().flatten();
+    let _ = rbench::isolate::apply_env_pin().ok().flatten();
+    let cgroup = rbench::isolate::apply_env_cgroup().unwrap_or_else(|e| {
+        rbench::isolate::CgroupReport {
+            applied: false,
+            path: None,
+            cpus: None,
+            memory_max: None,
+            note: format!("cgroup apply error: {e}"),
+        }
+    });
     let snap = rbench::isolate::snapshot();
     let warnings = rbench::isolate::noise_warnings(&snap);
     let perf = rbench::perf::probe();
@@ -71,6 +80,8 @@ fn main() -> rbench::Result<()> {
         "batch": batch,
         "samples": samples,
         "isolation": snap,
+        "cgroup": cgroup,
+        "cgroup": cgroup,
         "noise_warnings": warnings,
         "perf_probe": {
             "availability": format!("{:?}", perf.availability),
@@ -82,11 +93,13 @@ fn main() -> rbench::Result<()> {
             "wins": [
                 "typed multi-metric observations in one run",
                 "Availability never fabricates counter zeroes",
-                "optional CPU pin + load/governor snapshot for confirmatory context"
+                "optional CPU pin + best-effort cgroup v2 + load/governor snapshot",
+                "AND ship gates over wall ∩ throughput ∩ RSS"
             ],
             "does_not_claim": [
-                "lower hot-loop overhead than Divan/Criterion",
-                "Valgrind-deterministic CI without Callgrind adapter"
+                "zero hot-loop overhead vs Divan on every micro-body",
+                "BenchExec-grade isolation from RBENCH_CGROUP alone",
+                "hosted GitHub Actions is a controlled acceptance environment"
             ]
         }
     });

@@ -31,6 +31,8 @@ jobs:
         run: cargo run -p cargo-rbench -- callgrind --program /bin/true --out-dir /tmp/cg -o callgrind.json || true
       - name: Overhead diagnostic
         run: cargo run -p rbench --example overhead --release
+      - name: Bakeoff table
+        run: cargo run -p rbench --example bakeoff --release
       - name: Compete multi-metric demo
         run: cargo run -p rbench --example compete --release
       - uses: actions/upload-artifact@v4
