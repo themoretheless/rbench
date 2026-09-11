@@ -77,32 +77,37 @@ impl Drop for Hook {
 fn record(ptr: usize, old: usize, size: usize) {
     // A profiler failure must never unwind across GlobalAlloc.
     if std::panic::catch_unwind(|| {
-        if let Ok(mut b) = BUFFER.try_lock() {
-            if b.len == CAPACITY {
+        // A match (not `if let ... else`) keeps the guard's drop scope explicit
+        // and identical under the Rust 2024 temporary-scope rules.
+        match BUFFER.try_lock() {
+            Ok(mut b) => {
+                if b.len == CAPACITY {
+                    DROPPED.fetch_add(1, Relaxed);
+                    return;
+                }
+                let mut e = Event {
+                    ptr,
+                    old,
+                    size,
+                    ..EMPTY
+                };
+                if ptr != 0 {
+                    backtrace::trace(|f| {
+                        if e.depth == DEPTH {
+                            return false;
+                        }
+                        e.stack[e.depth] = f.ip() as usize;
+                        e.depth += 1;
+                        true
+                    });
+                }
+                let i = b.len;
+                b.events[i] = e;
+                b.len += 1;
+            }
+            _ => {
                 DROPPED.fetch_add(1, Relaxed);
-                return;
             }
-            let mut e = Event {
-                ptr,
-                old,
-                size,
-                ..EMPTY
-            };
-            if ptr != 0 {
-                backtrace::trace(|f| {
-                    if e.depth == DEPTH {
-                        return false;
-                    }
-                    e.stack[e.depth] = f.ip() as usize;
-                    e.depth += 1;
-                    true
-                });
-            }
-            let i = b.len;
-            b.events[i] = e;
-            b.len += 1;
-        } else {
-            DROPPED.fetch_add(1, Relaxed);
         }
     })
     .is_err()
