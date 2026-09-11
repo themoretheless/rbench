@@ -350,6 +350,9 @@ enum Action {
         run: PathBuf,
         #[arg(long, default_value = "")]
         filter: String,
+        /// Emit cases with their metrics and observation counts as JSON.
+        #[arg(long)]
+        json: bool,
     },
     /// Build benchmark executables without measuring (for project harness=false benches).
     Build {
@@ -668,10 +671,32 @@ fn execute() -> Result<i32> {
                 Some("html")=>doc.html()?,Some("json")=>serde_json::to_string_pretty(&doc)?,Some("md")|None=>doc.markdown()?,_=>return Err(error("report output extension must be .html, .json or .md"))
             };output(&text,path)?;
         }
-        Action::List { run, filter } => {
-            for c in load(run)?.cases {
-                if c.id.contains(&filter) {
-                    println!("{}", c.id);
+        Action::List { run, filter, json } => {
+            let r = load(run)?;
+            if json {
+                let mut rows = vec![];
+                for c in r.cases.iter().filter(|c| c.id.contains(&filter)) {
+                    let obs: Vec<_> = r.observations.iter().filter(|o| o.case == c.id).collect();
+                    let available = obs
+                        .iter()
+                        .filter(|o| o.availability == Availability::Available)
+                        .count();
+                    let processes: std::collections::BTreeSet<u32> =
+                        obs.iter().map(|o| o.process).collect();
+                    rows.push(serde_json::json!({
+                        "case": c.id,
+                        "metrics": c.metrics,
+                        "observations": obs.len(),
+                        "available": available,
+                        "processes": processes.len(),
+                    }));
+                }
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+            } else {
+                for c in r.cases {
+                    if c.id.contains(&filter) {
+                        println!("{}", c.id);
+                    }
                 }
             }
         }

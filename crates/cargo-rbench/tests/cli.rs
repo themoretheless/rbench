@@ -12,6 +12,33 @@ fn help_and_cargo_invocation() {
     assert!(cli(&["rbench", "doctor"]).status.success());
 }
 #[test]
+fn list_text_ids_and_json_metrics_with_counts() {
+    let t = tempfile::tempdir().unwrap();
+    let run = t.path().join("run");
+    simple_run(&run);
+    let path = run.to_str().unwrap();
+    // Text mode is unchanged: one case id per line.
+    let o = cli(&["list", path]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(String::from_utf8(o.stdout).unwrap().trim(), "=unsafe,case");
+    // JSON mode reports metrics and observation counts.
+    let o = cli(&["list", path, "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let rows = v.as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["case"], "=unsafe,case");
+    assert_eq!(rows[0]["metrics"][0]["id"], "wall");
+    assert_eq!(rows[0]["metrics"][0]["unit"], "ns");
+    assert_eq!(rows[0]["observations"], 1);
+    assert_eq!(rows[0]["available"], 1);
+    assert_eq!(rows[0]["processes"], 1);
+    // Filter narrows both modes; a non-match yields an empty JSON array.
+    let o = cli(&["list", path, "--json", "--filter", "nomatch"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v.as_array().unwrap().len(), 0);
+}
+#[test]
 fn completions_generate_per_shell_and_reject_unknown() {
     for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
         let o = cli(&["completions", shell]);
