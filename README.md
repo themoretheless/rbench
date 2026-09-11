@@ -29,7 +29,24 @@ cargo rbench report .rbench/sort -o .rbench/sort.html
 
 ## API библиотеки
 
-Подключение: `rbench = { path = "/path/to/rbench/crates/rbench" }`. Для Cargo benchmark target задайте `harness = false`.
+Подключение в другой проект (после публикации на crates.io):
+
+```toml
+[dependencies]
+rbench = "0.1"
+# опциональные возможности: features = ["macros", "memory"]
+```
+
+До первого релиза либо для незапубликованной ревизии подключайте прямо из Git:
+
+```toml
+[dependencies]
+rbench = { git = "https://github.com/themoretheless/rbench" }
+```
+
+Локальный checkout: `rbench = { path = "/path/to/rbench/crates/rbench" }`. Для Cargo benchmark target задайте `harness = false`.
+
+Публикация выполняется автоматически при пуше тега версии (`git tag v0.1.0 && git push origin v0.1.0`) workflow'ом [`release.yml`](.github/workflows/release.yml); он публикует `rbench-macros`, `rbench` и `cargo-rbench` в этом порядке и требует секрет репозитория `CARGO_REGISTRY_TOKEN`. Сборка, тесты, Clippy и проверка MSRV идут в [`ci.yml`](.github/workflows/ci.yml) на каждый push/PR.
 
 ```rust
 use rbench::{DropPolicy, Suite};
