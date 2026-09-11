@@ -4,10 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+repository.workspace = true
 description = "Local benchmark runner, Forma importer and offline reports"
+keywords = ["benchmark", "cargo-subcommand", "performance", "profiling"]
+categories = ["development-tools::profiling", "command-line-utilities"]
 
 [dependencies]
-rbench = { path = "../rbench", features = ["memory"] }
+rbench = { path = "../rbench", version = "0.1.0", features = ["memory"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
