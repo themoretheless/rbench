@@ -9,7 +9,7 @@ mod revisions;
 mod runner;
 mod sessions;
 mod web_ui;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use rbench::{analysis, report, *};
 use std::{
     fs::OpenOptions,
@@ -360,6 +360,11 @@ enum Action {
     },
     /// Print available host capabilities; does not change system settings.
     Doctor,
+    /// Print a shell completion script to stdout; does not modify the shell configuration.
+    Completions {
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 }
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum Uncertainty {
@@ -780,6 +785,18 @@ fn execute() -> Result<i32> {
         }
         Action::Doctor => {
             println!("rbench {}\nOS: {}\nArch: {}\nClock: std::time::Instant\nProcess tree cleanup: {}\nGPU: supplied by scenario (not probed)\nWindow: supplied by scenario (not probed)\nIsolation: local runner lease only\nStatistics: independent process units required",env!("CARGO_PKG_VERSION"),std::env::consts::OS,std::env::consts::ARCH,if cfg!(unix){"Unix process groups"}else{"direct child only; descendants unsupported"});
+        }
+        Action::Completions { shell } => {
+            // The installed cargo subcommand binary is `cargo-rbench`; complete against that name.
+            let mut cmd = Cli::command();
+            let mut buf = Vec::new();
+            clap_complete::generate(shell, &mut cmd, "cargo-rbench", &mut buf);
+            // A downstream pipe closed early (for example `... | head`) is not our error.
+            if let Err(e) = std::io::stdout().write_all(&buf) {
+                if e.kind() != std::io::ErrorKind::BrokenPipe {
+                    return Err(e.into());
+                }
+            }
         }
     }
     Ok(0)

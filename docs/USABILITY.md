@@ -26,6 +26,19 @@ targets = ["my_benchmark"]
 
 Настройки worker передаются после `--`, например `-- --samples 8 --warmup-ms 10 --sample-ms 1`. Прогресс идёт в stderr: target, номер процесса, baseline/candidate, оценка оставшегося времени; для долгого процесса показывается последняя фаза worker. ETA оценивается по завершённым процессам, не гарантируется при разных workloads. Диагностика supervisor может немного влиять на host load.
 
+## Автодополнение оболочки
+
+```sh
+# bash: подключить на текущую сессию
+source <(cargo rbench completions bash)
+# zsh: сохранить в каталог из $fpath
+cargo rbench completions zsh > ~/.zfunc/_cargo-rbench
+# поддерживаются также fish, powershell и elvish
+cargo rbench completions fish > ~/.config/fish/completions/cargo-rbench.fish
+```
+
+`completions SHELL` печатает скрипт автодополнения в stdout и не изменяет конфигурацию оболочки. Скрипт дополняет установленный бинарник `cargo-rbench`; неизвестное имя оболочки отклоняется. Закрытый downstream-канал (например, `| head`) не считается ошибкой.
+
 ## Именованные baseline
 
 ```sh

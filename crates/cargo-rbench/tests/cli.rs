@@ -11,6 +11,24 @@ fn help_and_cargo_invocation() {
     assert!(cli(&["--help"]).status.success());
     assert!(cli(&["rbench", "doctor"]).status.success());
 }
+#[test]
+fn completions_generate_per_shell_and_reject_unknown() {
+    for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
+        let o = cli(&["completions", shell]);
+        assert!(o.status.success(), "{shell}: {}", String::from_utf8_lossy(&o.stderr));
+        let script = String::from_utf8(o.stdout).unwrap();
+        assert!(!script.is_empty(), "{shell}: empty script");
+        // Every generator embeds the completed binary name and the real subcommands.
+        assert!(script.contains("cargo-rbench"), "{shell}: missing binary name");
+        assert!(script.contains("doctor") && script.contains("compare"), "{shell}: missing subcommands");
+    }
+    // The cargo-subcommand invocation form produces the same output.
+    let o = cli(&["rbench", "completions", "zsh"]);
+    assert!(o.status.success());
+    assert!(String::from_utf8(o.stdout).unwrap().starts_with("#compdef cargo-rbench"));
+    // Generation is read-only and never touches the shell configuration.
+    assert!(!cli(&["completions", "tcsh"]).status.success());
+}
 #[cfg(unix)]
 #[test]
 fn process_success_failure_timeout_and_immutable_output() {
