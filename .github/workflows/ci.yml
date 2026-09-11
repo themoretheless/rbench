@@ -46,9 +46,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # rbench-macros has no unpublished internal dependencies, so it can be
-      # fully packaged and verified here. rbench / cargo-rbench are verified by
-      # the build+test job above; they only fully `cargo package` once their
-      # internal dependencies exist on crates.io (see the release workflow).
+      # Sanity-check that the leaf crate's manifest packages cleanly. It has no
+      # internal dependencies, so it verifies standalone (rbench / cargo-rbench
+      # are covered by the build+test job above).
       - name: Package rbench-macros
         run: cargo package -p rbench-macros --locked

@@ -10,9 +10,12 @@ the `cargo-rbench` crate (`cargo install cargo-rbench`).
 
 ## Add the dependency
 
+Depend on it straight from Git (Cargo pins the resolved commit in your
+`Cargo.lock`; `cargo update` moves it forward):
+
 ```toml
 [dependencies]
-rbench = "0.1"
+rbench = { git = "https://github.com/themoretheless/rbench", branch = "release" }
 ```
 
 Optional features:

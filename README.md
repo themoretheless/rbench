@@ -29,15 +29,7 @@ cargo rbench report .rbench/sort -o .rbench/sort.html
 
 ## API библиотеки
 
-Подключение в другой проект (после публикации на crates.io):
-
-```toml
-[dependencies]
-rbench = "0.1"
-# опциональные возможности: features = ["macros", "memory"]
-```
-
-Либо подключайте прямо из Git (crates.io не нужен). Cargo фиксирует выбранный коммит в `Cargo.lock`; обновление — по `cargo update`:
+Подключение в другой проект — напрямую из Git (crates.io не нужен). Cargo фиксирует выбранный коммит в `Cargo.lock`; обновление — по `cargo update`:
 
 ```toml
 # всегда последняя ВЫПУЩЕННАЯ версия: ветка release двигается на каждый тег v*
@@ -52,11 +44,17 @@ Cargo не выбирает «самый свежий семвер-тег» из
 
 Локальный checkout: `rbench = { path = "/path/to/rbench/crates/rbench" }`. Для Cargo benchmark target задайте `harness = false`.
 
-Релиз одной командой: `git tag v0.1.0 && git push origin v0.1.0`. При пуше тега:
-- [`release-branch.yml`](.github/workflows/release-branch.yml) переводит ветку `release` на этот тег (для git-потребителей; секрет не нужен);
-- [`release.yml`](.github/workflows/release.yml) публикует `rbench-macros`, `rbench` и `cargo-rbench` на crates.io (нужен секрет `CARGO_REGISTRY_TOKEN`).
+### Как выпускать релиз
 
-Сборка, тесты, Clippy и проверка MSRV идут в [`ci.yml`](.github/workflows/ci.yml) на каждый push/PR.
+Разработка идёт в feature-ветках → PR → merge в `main`; каждый PR/пуш проверяет [`ci.yml`](.github/workflows/ci.yml) (build/test/Clippy `-D warnings` + MSRV 1.85), поэтому `main` остаётся релизным. Когда готов релиз — на зелёном коммите `main`:
+
+```sh
+# при необходимости поднимите версию в [workspace.package] Cargo.toml, закоммитьте в main
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+Пуш тега запускает [`release.yml`](.github/workflows/release.yml), который: (1) проверяет, что тег совпадает с версией крейта в `Cargo.toml`; (2) переводит ветку `release` на этот коммит; (3) создаёт GitHub Release с авто-заметками. Секреты не нужны — используется встроенный `GITHUB_TOKEN`. В `release` попадает ровно то, что помечено тегом; промежуточные коммиты `main` туда не утекают.
 
 ```rust
 use rbench::{DropPolicy, Suite};
