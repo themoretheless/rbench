@@ -12,6 +12,30 @@ fn help_and_cargo_invocation() {
     assert!(cli(&["rbench", "doctor"]).status.success());
 }
 #[test]
+fn check_enforces_min_and_max_bounds() {
+    let t = tempfile::tempdir().unwrap();
+    let run = t.path().join("run");
+    simple_run(&run); // one observation, metric "wall", value 42, statistic "total"
+    let path = run.to_str().unwrap();
+    let check = |args: &[&str]| {
+        let mut all = vec!["check", path, "--metric", "wall"];
+        all.extend_from_slice(args);
+        cli(&all).status.code()
+    };
+    // Upper bound (existing behaviour).
+    assert_eq!(check(&["--max", "42"]), Some(0));
+    assert_eq!(check(&["--max", "41"]), Some(1));
+    // Lower bound (new).
+    assert_eq!(check(&["--min", "42"]), Some(0));
+    assert_eq!(check(&["--min", "43"]), Some(1));
+    // Range: 42 inside passes, outside fails.
+    assert_eq!(check(&["--min", "10", "--max", "100"]), Some(0));
+    assert_eq!(check(&["--min", "10", "--max", "20"]), Some(1));
+    // Misuse: no bound, and inverted range.
+    assert_eq!(check(&[]), Some(2));
+    assert_eq!(check(&["--min", "100", "--max", "10"]), Some(2));
+}
+#[test]
 fn list_text_ids_and_json_metrics_with_counts() {
     let t = tempfile::tempdir().unwrap();
     let run = t.path().join("run");

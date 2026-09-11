@@ -83,6 +83,9 @@ cargo rbench compare .rbench/ab --threshold 5 --check
 cargo rbench compare .rbench/old .rbench/new --json
 # Абсолютный бюджет на каждое наблюдение, без статистического вывода:
 cargo rbench check .rbench/forma --metric geometry.uploads --max 0
+# Нижняя граница или диапазон (например, throughput не ниже порога):
+cargo rbench check .rbench/run --metric throughput.ops_per_sec --min 1000
+cargo rbench check .rbench/run --metric frame.completed --min 8 --max 16
 ```
 
 Runner чередует AB/BA, последовательно запускает процессы, сохраняет stdout/stderr, план, SHA-256 бинарников/fixtures и сырые наблюдения. Каталог результата должен быть новым: существующие данные не перезаписываются. Без `--protocol` измеряется длительность процесса целиком, включая запуск и ожидание завершения, с разрешением polling около 1 ms.

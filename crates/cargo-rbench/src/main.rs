@@ -316,13 +316,17 @@ enum Action {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    /// Check every available observation against an absolute maximum (no statistical inference).
+    /// Check every available observation against absolute lower/upper bounds (no statistical inference).
     Check {
         run: PathBuf,
         #[arg(long)]
         metric: String,
+        /// Absolute upper bound; fail if any observation exceeds it.
         #[arg(long)]
-        max: f64,
+        max: Option<f64>,
+        /// Absolute lower bound; fail if any observation falls below it.
+        #[arg(long)]
+        min: Option<f64>,
     },
     /// Import completed legacy Forma offscreen or paired directories.
     ImportForma {
@@ -765,9 +769,21 @@ fn execute() -> Result<i32> {
                 return Err(error("Cargo benchmark build failed"));
             }
         }
-        Action::Check { run, metric, max } => {
-            if !max.is_finite() || max < 0.0 {
-                return Err(error("--max must be finite and nonnegative"));
+        Action::Check { run, metric, max, min } => {
+            if max.is_none() && min.is_none() {
+                return Err(error("provide --max and/or --min"));
+            }
+            for (name, bound) in [("--max", max), ("--min", min)] {
+                if let Some(b) = bound {
+                    if !b.is_finite() || b < 0.0 {
+                        return Err(error(format!("{name} must be finite and nonnegative")));
+                    }
+                }
+            }
+            if let (Some(min), Some(max)) = (min, max) {
+                if min > max {
+                    return Err(error("--min must not exceed --max"));
+                }
             }
             let run = load(run)?;
             if run.status != Status::Complete {
@@ -792,10 +808,17 @@ fn execute() -> Result<i32> {
                 if m.statistic == "batch_total" {
                     value /= o.operations as f64;
                 }
-                if value > max {
+                if max.is_some_and(|max| value > max) {
                     eprintln!(
-                        "{} {} process {}: {value} {} > {max}",
-                        o.case, o.variant, o.process, m.unit
+                        "{} {} process {}: {value} {} > {}",
+                        o.case, o.variant, o.process, m.unit, max.unwrap()
+                    );
+                    failed = true;
+                }
+                if min.is_some_and(|min| value < min) {
+                    eprintln!(
+                        "{} {} process {}: {value} {} < {}",
+                        o.case, o.variant, o.process, m.unit, min.unwrap()
                     );
                     failed = true;
                 }
@@ -803,7 +826,13 @@ fn execute() -> Result<i32> {
             if count == 0 {
                 return Err(error("metric not found"));
             }
-            println!("Checked {count} observations; absolute max {max}. This is a budget check, not a statistical comparison.");
+            let bounds = match (min, max) {
+                (Some(min), Some(max)) => format!("range [{min}, {max}]"),
+                (Some(min), None) => format!("absolute min {min}"),
+                (None, Some(max)) => format!("absolute max {max}"),
+                (None, None) => unreachable!("at least one bound is required"),
+            };
+            println!("Checked {count} observations; {bounds}. This is a budget check, not a statistical comparison.");
             if failed {
                 return Ok(1);
             }
