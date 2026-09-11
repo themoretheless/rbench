@@ -1,5 +1,7 @@
 # Реализация и проверка
 
+Close-the-gaps 2026-09-11: Callgrind adapter (`rbench::callgrind` / `cargo rbench callgrind`); `Suite::bench_batch` + `#[rbench::main]`; hyperfine-class `cargo rbench time`; scorecard Trails closed.
+
 Compete slice 2026-09-11: Linux perf_event instructions/cycles; isolation snapshot + optional CPU pin; `accept --hardware` live Instant A/A; `cargo rbench compete` honest scorecard vs Criterion/Divan/iai/hyperfine; `docs/COMPETE.md`; `examples/compete.rs`.
 
 Next slice 2026-09-11: first-class throughput observations for gates; compare/list Selection parity; Windows process metrics; overhead diagnostic example; CI smoke with accept.

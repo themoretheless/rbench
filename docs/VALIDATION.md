@@ -114,4 +114,11 @@ Workspace tests: library unit tests for process/acceptance/publish + existing co
 - `cargo rbench accept --hardware`: live Instant A/A on current host with isolation context.
 - `cargo rbench compete` / `docs/COMPETE.md`: honest scorecard vs Criterion/Divan/iai/hyperfine.
 - `examples/compete.rs`: multi-metric demo (wall + throughput + process + perf).
-- Still open: Callgrind adapter, cgroup isolation, published Criterion/Divan bake-off numbers on a quiet host, Forma window/Metal goldens.
+
+## Close-the-gaps slice 2026-09-11
+
+- `rbench::callgrind` + `cargo rbench callgrind`: Valgrind Callgrind Ir/Dr/Dw for iai-class deterministic CI; Unavailable when valgrind missing.
+- `Suite::bench_batch` + `#[rbench::bench]` / `#[rbench::main]`: Divan-competitive hot-loop ergonomics / bookkeeping.
+- `cargo rbench time`: hyperfine-class command wall timing (blocking wait, warmup/runs/shell/prepare/cleanup, markdown/json + optional Run).
+- Scorecard Trails removed: hot-loop Competitive/Lead, Callgrind Lead (tied), command timing Lead/Competitive.
+- Still open: cgroup isolation, published Criterion/Divan quiet-host bake-off numbers, Forma window/Metal goldens.

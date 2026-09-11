@@ -25,6 +25,10 @@ jobs:
         run: cargo run -p cargo-rbench -- compete -o compete.json
       - name: Doctor
         run: cargo run -p cargo-rbench -- doctor
+      - name: Command timing
+        run: cargo run -p cargo-rbench -- time --runs 5 --warmup 1 -- /bin/true
+      - name: Callgrind (optional)
+        run: cargo run -p cargo-rbench -- callgrind --program /bin/true --out-dir /tmp/cg -o callgrind.json || true
       - name: Overhead diagnostic
         run: cargo run -p rbench --example overhead --release
       - name: Compete multi-metric demo
@@ -36,4 +40,5 @@ jobs:
           path: |
             accept.json
             compete.json
+            callgrind.json
           if-no-files-found: warn

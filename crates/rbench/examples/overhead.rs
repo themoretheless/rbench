@@ -50,11 +50,13 @@ fn main() -> rbench::Result<()> {
     let hand_med = median(&mut hand);
 
     let mut suite = Suite::new("overhead");
-    // One Suite operation = the whole batch, matching the handwritten sample.
+    // Caller-owned batch loop: Suite times a single f(n) — Divan-competitive bookkeeping.
     suite
-        .bench("mix64_batch", move || {
-            for i in 0..batch {
-                black_box(mix64(i));
+        .bench_batch("mix64_batch", move |n| {
+            for _ in 0..n {
+                for i in 0..batch {
+                    black_box(mix64(i));
+                }
             }
         })
         .parameter("batch", batch);

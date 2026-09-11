@@ -9,6 +9,7 @@ pub use convenience::{Fixture, Seeded, Selection};
 pub mod image;
 pub mod process;
 pub mod perf;
+pub mod callgrind;
 pub mod isolate;
 pub mod publish;
 pub mod scenario;
@@ -34,7 +35,7 @@ pub fn error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + S
 /// async fn implicit_runtime() {}
 /// ```
 #[cfg(feature = "macros")]
-pub use rbench_macros::bench;
+pub use rbench_macros::{bench, main};
 pub mod diagnostics;
 pub mod workloads;
 

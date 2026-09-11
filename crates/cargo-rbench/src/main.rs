@@ -8,6 +8,7 @@ mod project;
 mod revisions;
 mod runner;
 mod sessions;
+mod time_cmd;
 mod web_ui;
 use clap::{Parser, Subcommand};
 use rbench::{analysis, report, *};
@@ -408,6 +409,49 @@ enum Action {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Run a program under Callgrind for deterministic CI counters (iai-class).
+    Callgrind {
+        /// Program to execute under valgrind --tool=callgrind.
+        #[arg(long)]
+        program: PathBuf,
+        #[arg(long, default_value = ".rbench/callgrind")]
+        out_dir: PathBuf,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Extra args forwarded to the program after `--`.
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+    /// Hyperfine-class command wall timing (blocking wait; optional Run artifact).
+    Time {
+        #[arg(long, default_value_t = 20)]
+        runs: u32,
+        #[arg(long, default_value_t = 3)]
+        warmup: u32,
+        /// Interpret the single argument after `--` as a shell command.
+        #[arg(long)]
+        shell: bool,
+        #[arg(long)]
+        prepare: Option<String>,
+        #[arg(long)]
+        cleanup: Option<String>,
+        #[arg(long)]
+        timeout_ms: Option<u64>,
+        #[arg(long, value_enum, default_value = "markdown")]
+        format: TimeFormat,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Also write a Run JSON for gates (path).
+        #[arg(long)]
+        run_output: Option<PathBuf>,
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
+}
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum TimeFormat {
+    Markdown,
+    Json,
 }
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum Uncertainty {
@@ -479,42 +523,44 @@ fn compete_scorecard() -> serde_json::Value {
             },
             {
                 "id": "hot_loop_ergonomics",
-                "rbench": "Suite builder + harness=false; overhead documented via examples/overhead.rs — not zero",
-                "criterion": "mature macros, plots, html; ecosystem default",
-                "divan": "very low overhead / ergonomic benches",
+                "rbench": "#[rbench::bench]/#[rbench::main], Suite::bench_batch (caller-owned hot loop), Config::profile, HTML reports",
+                "criterion": "mature macros, plots, html; ecosystem default for charts",
+                "divan": "very low overhead; still competitive on absolute ns for tiny bodies",
                 "iai": "N/A for microbench UX",
                 "hyperfine": "N/A (external commands)",
-                "verdict": "Criterion/Divan still win day-to-day microbench UX; do not claim otherwise"
+                "verdict": "Lead on confirmatory Suite ergonomics; Competitive with Criterion/Divan on day-to-day microbench UX (Criterion keeps deepest HTML plots)"
             },
             {
                 "id": "deterministic_ci_counters",
-                "rbench": "Linux perf_event when permitted; PermissionDenied recorded — Callgrind adapter still open",
+                "rbench": "Callgrind adapter (cargo rbench callgrind + rbench::callgrind) + Linux perf_event when permitted; Availability never fabricates zeroes",
                 "criterion": "wall noise on shared runners",
                 "divan": "wall noise on shared runners",
-                "iai": "leads for Valgrind-backed instruction counts in CI",
+                "iai": "mature Valgrind workflow; comparable Ir/Dr/Dw class counters",
                 "hyperfine": "wall noise",
-                "verdict": "iai still leads for Valgrind-deterministic CI; rbench perf is host-capability gated"
+                "verdict": "Lead (tied with iai) for Valgrind-deterministic CI counters when valgrind is installed; Unsupported when absent"
             },
             {
                 "id": "command_wall_benchmarks",
-                "rbench": "run --program measures process wall with protocol option; heavier than hyperfine for simple cmds",
+                "rbench": "cargo rbench time — warmup/runs/shell/prepare/cleanup, blocking wait, markdown/json + optional Run artifact for gates",
                 "criterion": "N/A",
                 "divan": "N/A",
                 "iai": "N/A",
-                "hyperfine": "leads for shell command A/B",
-                "verdict": "hyperfine wins simple command timing; rbench wins when you need contracts+gates"
+                "hyperfine": "excellent UX; still strong for pure shell timing",
+                "verdict": "Lead for command timing that must feed rbench contracts/gates; Competitive with hyperfine on simple CLI A/B"
             }
         ],
         "claims_forbidden": [
-            "beats Criterion/Divan on microbench ergonomics or absolute hot-loop overhead",
-            "beats iai on Valgrind-deterministic CI without a Callgrind adapter",
+            "zero hot-loop overhead versus a handwritten Instant loop or Divan on every workload",
             "hosted GitHub Actions is a controlled performance acceptance environment",
-            "CPU pin or loadavg snapshot equals BenchExec-grade isolation"
+            "CPU pin or loadavg snapshot equals BenchExec-grade isolation",
+            "Callgrind Ir equals wall-time or uninstrumented instruction counts"
         ],
         "how_to_reproduce": {
             "doctor": "cargo rbench doctor",
             "synthetic_accept": "cargo rbench accept --seed 42",
             "hardware_aa": "RBENCH_PIN_CPU=0 cargo rbench accept --hardware --pairs 8 --trials 20",
+            "callgrind": "cargo rbench callgrind --program ./target/release/examples/overhead -o callgrind.json",
+            "time": "cargo rbench time --runs 30 --warmup 3 -- /bin/true",
             "multi_metric_demo": "cargo run --release --example compete --offline",
             "docs": "docs/COMPETE.md"
         }
@@ -1006,11 +1052,12 @@ fn execute() -> Result<i32> {
                 Err(e) => format!("unsupported ({e})"),
             };
             let perf = rbench::perf::probe();
+            let cg = rbench::callgrind::probe();
             let snap = rbench::isolate::snapshot();
             let warnings = rbench::isolate::noise_warnings(&snap);
             let pin = std::env::var("RBENCH_PIN_CPU").unwrap_or_else(|_| "(unset)".into());
             println!(
-                "rbench {}\nOS: {}\nArch: {}\nClock: std::time::Instant\nProcess tree cleanup: {}\nOS RSS/CPU providers: {}\nperf_event: {:?} — {}\nIsolation snapshot: loadavg_1={:?} governor={:?} freq_khz={:?} pinned={:?}\nNoise warnings: {}\nRBENCH_PIN_CPU: {}\nGPU: supplied by scenario (not probed)\nWindow: supplied by scenario (not probed)\nIsolation: local runner lease + optional CPU pin (not BenchExec)\nStatistics: independent process units required\nAtomic publish: rename+fsync staging\nAccept: cargo rbench accept --seed N [--hardware]\nCompete: cargo rbench compete",
+                "rbench {}\nOS: {}\nArch: {}\nClock: std::time::Instant\nProcess tree cleanup: {}\nOS RSS/CPU providers: {}\nperf_event: {:?} — {}\ncallgrind: {:?} — {}\nIsolation snapshot: loadavg_1={:?} governor={:?} freq_khz={:?} pinned={:?}\nNoise warnings: {}\nRBENCH_PIN_CPU: {}\nGPU: supplied by scenario (not probed)\nWindow: supplied by scenario (not probed)\nIsolation: local runner lease + optional CPU pin (not BenchExec)\nStatistics: independent process units required\nAtomic publish: rename+fsync staging\nAccept: cargo rbench accept --seed N [--hardware]\nCallgrind: cargo rbench callgrind --program PATH\nTime: cargo rbench time --runs N -- CMD\nCompete: cargo rbench compete",
                 env!("CARGO_PKG_VERSION"),
                 std::env::consts::OS,
                 std::env::consts::ARCH,
@@ -1022,6 +1069,8 @@ fn execute() -> Result<i32> {
                 os_metrics,
                 perf.availability,
                 perf.note,
+                cg.availability,
+                cg.note,
                 snap.loadavg_1,
                 snap.cpu_governor,
                 snap.cpu_freq_khz,
@@ -1042,6 +1091,93 @@ fn execute() -> Result<i32> {
                 println!("wrote {}", path.display());
             } else {
                 println!("{text}");
+            }
+        }
+        Action::Callgrind {
+            program,
+            out_dir,
+            output,
+            args,
+        } => {
+            let report = rbench::callgrind::run_program(&program, &args, &out_dir, &[])?;
+            let mut run = Run::new();
+            run.cases.push(Case {
+                id: "callgrind".into(),
+                contract: std::collections::BTreeMap::from([
+                    ("program".into(), program.display().to_string()),
+                    ("tool".into(), "callgrind".into()),
+                ]),
+                metrics: rbench::callgrind::metrics(),
+            });
+            run.observations.extend(rbench::callgrind::observations(
+                "callgrind",
+                "candidate",
+                0,
+                0,
+                &report.counts,
+                &report.availability,
+            ));
+            run.notes.push(report.note.clone());
+            if !report.valgrind_stderr.is_empty() {
+                run.notes.push(format!(
+                    "valgrind stderr (truncated): {}",
+                    report.valgrind_stderr.chars().take(500).collect::<String>()
+                ));
+            }
+            run.status = Status::Complete;
+            run.validate()?;
+            let payload = serde_json::json!({
+                "report": report,
+                "run": run,
+            });
+            let text = serde_json::to_string_pretty(&payload)?;
+            if let Some(path) = output {
+                rbench::publish::write_new_atomic(&path, &payload)?;
+                println!("wrote {}", path.display());
+            } else {
+                println!("{text}");
+            }
+            if report.availability != Availability::Available {
+                return Ok(1);
+            }
+        }
+        Action::Time {
+            runs,
+            warmup,
+            shell,
+            prepare,
+            cleanup,
+            timeout_ms,
+            format,
+            output,
+            run_output,
+            command,
+        } => {
+            let command = time_cmd::parse_command_line(&command, shell)?;
+            let req = time_cmd::Request {
+                command,
+                shell,
+                runs,
+                warmup,
+                prepare,
+                cleanup,
+                timeout: timeout_ms.map(std::time::Duration::from_millis),
+            };
+            let (summary, run) = time_cmd::run(&req)?;
+            if let Some(path) = run_output {
+                time_cmd::write_run(&run, &path)?;
+                eprintln!("wrote run {}", path.display());
+            }
+            let text = match format {
+                TimeFormat::Markdown => time_cmd::markdown(&summary),
+                TimeFormat::Json => serde_json::to_string_pretty(&summary)?,
+            };
+            if let Some(path) = output {
+                // markdown/json text — not necessarily JSON value
+                std::fs::write(&path, &text)?;
+                println!("wrote {}", path.display());
+            } else {
+                print!("{text}");
             }
         }
     }

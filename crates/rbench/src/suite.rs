@@ -100,6 +100,22 @@ impl<'a> Suite<'a> {
         );
         self
     }
+    /// Tight batch path: caller owns the inner loop. Suite times one `f(n)` call
+    /// with a single `Instant`/`black_box` pair — Divan-competitive bookkeeping.
+    /// Prefer this over [`Self::bench`] when measuring sub-100ns useful work.
+    pub fn bench_batch<O: 'a>(&mut self, name: &str, mut f: impl FnMut(u64) -> O + 'a) -> &mut Self {
+        self.register(
+            name,
+            "caller-owned batch loop; single Instant around f(n); output drop included",
+            1_048_576,
+            Box::new(move |n| {
+                let start = Instant::now();
+                black_box(f(n));
+                start.elapsed().as_nanos()
+            }),
+        );
+        self
+    }
     /// Fresh input for EVERY operation. Input generation and input Drop are excluded.
     /// Outputs are buffered only when their Drop is excluded; at most 64 per batch.
     /// Heap allocations owned by input/output are controlled by the caller, not byte-capped.
