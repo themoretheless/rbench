@@ -6,7 +6,6 @@ license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 description = "Explicit, reproducible Rust benchmarks and scenario observations"
-readme = "README.md"
 keywords = ["benchmark", "performance", "profiling", "statistics"]
 categories = ["development-tools::profiling", "development-tools::testing"]
 
