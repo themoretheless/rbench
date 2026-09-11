@@ -231,6 +231,18 @@ pub fn write_new(path: &Path, value: &impl Serialize) -> Result<()> {
     f.sync_all()?;
     Ok(())
 }
+/// Lowercase hex encoding of a byte slice.
+///
+/// sha2 0.11 returns a `hybrid_array::Array` digest that no longer implements
+/// `LowerHex`, so hashing sites format the raw bytes through this helper.
+pub fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
 pub fn hash_file(path: &Path) -> Result<String> {
     let mut f = fs::File::open(path)?;
     let mut hash = Sha256::new();
@@ -242,5 +254,5 @@ pub fn hash_file(path: &Path) -> Result<String> {
         }
         hash.update(&buf[..n]);
     }
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(hex(&hash.finalize()))
 }

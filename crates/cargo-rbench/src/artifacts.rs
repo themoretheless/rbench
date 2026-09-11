@@ -227,7 +227,7 @@ struct Bundle {
     files: Vec<Entry>,
 }
 fn hash(s: &str) -> String {
-    format!("{:x}", Sha256::digest(s.as_bytes()))
+    rbench::model::hex(&Sha256::digest(s.as_bytes()))
 }
 pub fn bundle(store: &Path, run: &Path, out: &Path) -> Result<()> {
     let r = Run::load(run)?;

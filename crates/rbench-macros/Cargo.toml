@@ -9,5 +9,5 @@ description = "Attribute macros for the rbench benchmark library"
 [lib]
 proc-macro = true
 [dependencies]
-syn = { version = "2", features = ["full"] }
+syn = { version = "3", features = ["full"] }
 quote = "1"
