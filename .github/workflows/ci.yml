@@ -18,33 +18,36 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run the shared Rust checks
-        uses: ./.github/actions/rust-checks
+      - name: Set up Rust
+        uses: themoretheless/.github/.github/actions/setup-rust@d66cd190a0d7a8b45f909dfa97597be34ec93f1f
         with:
-          toolchain: stable
+          rust-toolchain: stable
           components: clippy
+      - name: Build
+        run: cargo build --workspace --all-targets --locked
+      - name: Test
+        run: cargo test --workspace --locked
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   msrv:
     name: Check MSRV (1.85)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build with the declared minimum supported Rust version
-        uses: ./.github/actions/rust-checks
+      - name: Set up Rust
+        uses: themoretheless/.github/.github/actions/setup-rust@d66cd190a0d7a8b45f909dfa97597be34ec93f1f
         with:
-          toolchain: "1.85.0"
-          test: "false"
-          clippy: "false"
+          rust-toolchain: "1.85.0"
+      - name: Build with the declared minimum supported Rust version
+        run: cargo build --workspace --all-targets --locked
 
   package:
     name: Verify library packages
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      # Sanity-check that the leaf crate's manifest packages cleanly. It has no
-      # internal dependencies, so it verifies standalone (rbench / cargo-rbench
-      # are covered by the build+test job above).
+      - name: Set up Rust
+        uses: themoretheless/.github/.github/actions/setup-rust@d66cd190a0d7a8b45f909dfa97597be34ec93f1f
       - name: Package rbench-macros
         run: cargo package -p rbench-macros --locked
