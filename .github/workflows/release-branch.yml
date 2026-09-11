@@ -1,0 +1,28 @@
+name: Update release branch
+
+# Advances the moving `release` branch to every pushed version tag, so other
+# projects can track the latest RELEASED commit directly from Git:
+#
+#   rbench = { git = "https://github.com/themoretheless/rbench", branch = "release" }
+#
+# Independent of crates.io: this needs no secret, only write access to the repo
+# (granted below via the built-in GITHUB_TOKEN).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    name: Point `release` at the tagged commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fast-forward or reset the release branch to this tag
+        run: |
+          echo "Tag ${GITHUB_REF_NAME} -> commit ${GITHUB_SHA}"
+          git push origin "${GITHUB_SHA}:refs/heads/release" --force

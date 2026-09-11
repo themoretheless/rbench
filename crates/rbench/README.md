@@ -39,14 +39,23 @@ fn main() -> rbench::Result<()> {
 }
 ```
 
-## Using it from another project before a crates.io release
+## Using it from another project via Git
 
-Depend on it straight from Git:
+No crates.io needed. Cargo pins the resolved commit in your `Cargo.lock`;
+`cargo update` moves it forward.
 
 ```toml
-[dependencies]
+# latest RELEASED version: the `release` branch advances on every v* tag
+rbench = { git = "https://github.com/themoretheless/rbench", branch = "release" }
+# pinned version
+rbench = { git = "https://github.com/themoretheless/rbench", tag = "v0.1.0" }
+# tip of the default branch (includes unreleased work)
 rbench = { git = "https://github.com/themoretheless/rbench" }
 ```
+
+Cargo cannot pick the highest semver *tag* from Git — semver ranges such as
+`rbench = "0.1"` only work through a registry. "Latest from the repo" is a
+moving branch (`release`); exact versions are tags.
 
 ## License
 

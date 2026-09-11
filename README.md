@@ -37,16 +37,26 @@ rbench = "0.1"
 # опциональные возможности: features = ["macros", "memory"]
 ```
 
-До первого релиза либо для незапубликованной ревизии подключайте прямо из Git:
+Либо подключайте прямо из Git (crates.io не нужен). Cargo фиксирует выбранный коммит в `Cargo.lock`; обновление — по `cargo update`:
 
 ```toml
-[dependencies]
+# всегда последняя ВЫПУЩЕННАЯ версия: ветка release двигается на каждый тег v*
+rbench = { git = "https://github.com/themoretheless/rbench", branch = "release" }
+# жёстко закреплённая версия
+rbench = { git = "https://github.com/themoretheless/rbench", tag = "v0.1.0" }
+# последний коммit ветки по умолчанию (main), включая незарелиженные изменения
 rbench = { git = "https://github.com/themoretheless/rbench" }
 ```
 
+Cargo не выбирает «самый свежий семвер-тег» из git: диапазоны вроде `rbench = "0.1"` работают только через реестр. «Latest из репы» — это движущаяся ветка (`release`), а точные версии — теги.
+
 Локальный checkout: `rbench = { path = "/path/to/rbench/crates/rbench" }`. Для Cargo benchmark target задайте `harness = false`.
 
-Публикация выполняется автоматически при пуше тега версии (`git tag v0.1.0 && git push origin v0.1.0`) workflow'ом [`release.yml`](.github/workflows/release.yml); он публикует `rbench-macros`, `rbench` и `cargo-rbench` в этом порядке и требует секрет репозитория `CARGO_REGISTRY_TOKEN`. Сборка, тесты, Clippy и проверка MSRV идут в [`ci.yml`](.github/workflows/ci.yml) на каждый push/PR.
+Релиз одной командой: `git tag v0.1.0 && git push origin v0.1.0`. При пуше тега:
+- [`release-branch.yml`](.github/workflows/release-branch.yml) переводит ветку `release` на этот тег (для git-потребителей; секрет не нужен);
+- [`release.yml`](.github/workflows/release.yml) публикует `rbench-macros`, `rbench` и `cargo-rbench` на crates.io (нужен секрет `CARGO_REGISTRY_TOKEN`).
+
+Сборка, тесты, Clippy и проверка MSRV идут в [`ci.yml`](.github/workflows/ci.yml) на каждый push/PR.
 
 ```rust
 use rbench::{DropPolicy, Suite};
