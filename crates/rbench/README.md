@@ -15,7 +15,7 @@ Depend on it straight from Git (Cargo pins the resolved commit in your
 
 ```toml
 [dependencies]
-rbench = { git = "https://github.com/themoretheless/rbench", tag = "v0.1.0" }
+rbench = { git = "https://github.com/themoretheless/rbench", branch = "release" }
 ```
 
 Optional features:
@@ -48,15 +48,18 @@ No crates.io needed. Cargo pins the resolved commit in your `Cargo.lock`;
 `cargo update` moves it forward.
 
 ```toml
-# pinned released version (v* tags are created automatically on a version bump)
+# latest RELEASED version: the `release` branch advances on each release
+rbench = { git = "https://github.com/themoretheless/rbench", branch = "release" }
+# pinned version (v* tags are created automatically on a version bump)
 rbench = { git = "https://github.com/themoretheless/rbench", tag = "v0.1.0" }
 # tip of the default branch (includes unreleased work)
 rbench = { git = "https://github.com/themoretheless/rbench" }
 ```
 
 Cargo cannot pick the highest semver *tag* from Git — semver ranges such as
-`rbench = "0.1"` only work through a registry. Exact versions are `v*` tags;
-"just latest" is the `main` branch.
+`rbench = "0.1"` only work through a registry. "Latest release" is the moving
+`release` branch, exact versions are `v*` tags, and `main` is the latest commit.
+The `release` branch appears after the first release; until then use `main`.
 
 ## License
 

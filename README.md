@@ -32,15 +32,17 @@ cargo rbench report .rbench/sort -o .rbench/sort.html
 Подключение в другой проект — напрямую из Git (crates.io не нужен). Cargo фиксирует выбранный коммит в `Cargo.lock`; обновление — по `cargo update`:
 
 ```toml
-# закреплённая выпущенная версия (теги v* создаются автоматически при бампе версии)
+# всегда последний РЕЛИЗ: ветка release двигается на каждый выпуск
+rbench = { git = "https://github.com/themoretheless/rbench", branch = "release" }
+# закреплённая версия (теги v* создаются автоматически при бампе версии)
 rbench = { git = "https://github.com/themoretheless/rbench", tag = "v0.1.0" }
 # последний коммит ветки по умолчанию (main), включая незарелиженные изменения
 rbench = { git = "https://github.com/themoretheless/rbench" }
 # опциональные возможности:
-# rbench = { git = "…", tag = "v0.1.0", features = ["macros", "memory"] }
+# rbench = { git = "…", branch = "release", features = ["macros", "memory"] }
 ```
 
-Cargo не выбирает «самый свежий семвер-тег» из git: диапазоны вроде `rbench = "0.1"` работают только через реестр. Точные версии — это теги `v*`, а «просто latest» — ветка `main`.
+Cargo не выбирает «самый свежий семвер-тег» из git: диапазоны вроде `rbench = "0.1"` работают только через реестр. «Всегда последний релиз» — это движущаяся ветка `release`, точные версии — теги `v*`, а «tip main» — ветка `main`. Ветка `release` появляется после первого релиза; до него используйте `main`.
 
 Локальный checkout: `rbench = { path = "/path/to/rbench/crates/rbench" }`. Для Cargo benchmark target задайте `harness = false`.
 
@@ -53,7 +55,7 @@ Cargo не выбирает «самый свежий семвер-тег» из
 # закоммитьте и слейте в main
 ```
 
-Пуш в `main` запускает [`release.yml`](.github/workflows/release.yml) — тонкую обёртку над общим reusable-workflow `themoretheless/.github/.github/workflows/release-rust-library.yml`. Он сравнивает версию `rbench` в `Cargo.toml` до/после пуша и, если она изменилась: гоняет Clippy и тесты, затем создаёт тег `v<version>` и GitHub Release с авто-заметками. Секреты не нужны — используется встроенный `GITHUB_TOKEN` (rustfmt отключён: `run_fmt: false`). Если версия не менялась, релиз не создаётся.
+Пуш в `main` запускает [`release.yml`](.github/workflows/release.yml) — тонкую обёртку над общим reusable-workflow `themoretheless/.github/.github/workflows/release-rust-library.yml`. Он сравнивает версию `rbench` в `Cargo.toml` до/после пуша и, если она изменилась: гоняет Clippy и тесты, затем создаёт тег `v<version>` и GitHub Release с авто-заметками. Секреты не нужны — используется встроенный `GITHUB_TOKEN` (rustfmt отключён: `run_fmt: false`). Если версия не менялась, релиз не создаётся. После успешного релиза ветка `release` переводится на этот коммит, поэтому потребители с `branch = "release"` всегда получают последний выпуск.
 
 ```rust
 use rbench::{DropPolicy, Suite};

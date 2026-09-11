@@ -24,3 +24,18 @@ jobs:
       package_name: rbench
       rust_toolchain: stable
       run_fmt: false
+
+  # Advance the moving `release` branch to each new release, so other projects
+  # can always depend on the latest RELEASED commit:
+  #   rbench = { git = "https://github.com/themoretheless/rbench", branch = "release" }
+  release-branch:
+    name: Point the release branch at the new release
+    needs: release
+    if: needs.release.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fast-forward the release branch to the released commit
+        run: git push origin "HEAD:refs/heads/release" --force
