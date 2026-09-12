@@ -91,6 +91,8 @@ cargo rbench compare .rbench/old .rbench/new --json
 cargo rbench check .rbench/forma --metric geometry.uploads --max 0
 # Нижняя граница или диапазон на конкретную метрику (можно сузить кейсы через --filter):
 cargo rbench check .rbench/forma --metric frame.completed --min 8 --max 16 --filter static
+# бюджет на медиану каждого процесса, а не на каждое наблюдение (устойчивее к выбросам):
+cargo rbench check .rbench/run --metric wall --max 200 --per-process
 # Производная throughput (units/s; MiB/s для bytes) с бюджетом:
 cargo rbench throughput .rbench/run --min 1000
 ```

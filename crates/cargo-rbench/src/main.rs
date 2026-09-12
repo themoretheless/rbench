@@ -347,6 +347,9 @@ enum Action {
         /// Only check cases whose id contains this substring.
         #[arg(long, default_value = "")]
         filter: String,
+        /// Bound each process's median instead of every individual observation.
+        #[arg(long)]
+        per_process: bool,
     },
     /// Import completed legacy Forma offscreen or paired directories.
     ImportForma {
@@ -1030,7 +1033,7 @@ fn execute() -> Result<i32> {
                 return Err(error("Cargo benchmark build failed"));
             }
         }
-        Action::Check { run, metric, max, min, filter } => {
+        Action::Check { run, metric, max, min, filter, per_process } => {
             if max.is_none() && min.is_none() {
                 return Err(error("provide --max and/or --min"));
             }
@@ -1050,46 +1053,67 @@ fn execute() -> Result<i32> {
             if run.status != Status::Complete {
                 return Err(error("check requires complete run"));
             }
-            let mut count = 0;
-            let mut failed = false;
-            for o in run
-                .observations
-                .iter()
-                .filter(|o| o.metric == metric && o.case.contains(&filter))
-            {
-                count += 1;
-                let mut value = o
-                    .number()?
-                    .ok_or_else(|| error("required metric unavailable"))?;
-                let m = run
-                    .cases
+            let descriptor = |case: &str| {
+                run.cases
                     .iter()
-                    .find(|c| c.id == o.case)
+                    .find(|c| c.id == case)
                     .unwrap()
                     .metrics
                     .iter()
                     .find(|m| m.id == metric)
-                    .unwrap();
-                if m.statistic == "batch_total" {
-                    value /= o.operations as f64;
+                    .unwrap()
+            };
+            // Collect the values to bound: either every observation, or each
+            // (case, variant, process) group's median.
+            let mut points: Vec<(String, String, Option<u32>, f64, String)> = Vec::new();
+            if per_process {
+                let mut groups: std::collections::BTreeMap<(String, String, u32), (Vec<f64>, String)> =
+                    std::collections::BTreeMap::new();
+                for o in run
+                    .observations
+                    .iter()
+                    .filter(|o| o.metric == metric && o.case.contains(&filter))
+                {
+                    let m = descriptor(&o.case);
+                    let v = m
+                        .reduce(o)?
+                        .ok_or_else(|| error("required metric unavailable"))?;
+                    groups
+                        .entry((o.case.clone(), o.variant.clone(), o.process))
+                        .or_insert_with(|| (Vec::new(), m.unit.clone()))
+                        .0
+                        .push(v);
                 }
-                if max.is_some_and(|max| value > max) {
-                    eprintln!(
-                        "{} {} process {}: {value} {} > {}",
-                        o.case, o.variant, o.process, m.unit, max.unwrap()
-                    );
-                    failed = true;
+                for ((case, variant, process), (values, unit)) in groups {
+                    points.push((case, variant, Some(process), analysis::median(&values), unit));
                 }
-                if min.is_some_and(|min| value < min) {
-                    eprintln!(
-                        "{} {} process {}: {value} {} < {}",
-                        o.case, o.variant, o.process, m.unit, min.unwrap()
-                    );
-                    failed = true;
+            } else {
+                for o in run
+                    .observations
+                    .iter()
+                    .filter(|o| o.metric == metric && o.case.contains(&filter))
+                {
+                    let m = descriptor(&o.case);
+                    let v = m
+                        .reduce(o)?
+                        .ok_or_else(|| error("required metric unavailable"))?;
+                    points.push((o.case.clone(), o.variant.clone(), Some(o.process), v, m.unit.clone()));
                 }
             }
-            if count == 0 {
+            if points.is_empty() {
                 return Err(error("metric not found"));
+            }
+            let mut failed = false;
+            for (case, variant, process, value, unit) in &points {
+                let proc = process.map(|p| format!(" process {p}")).unwrap_or_default();
+                if max.is_some_and(|max| *value > max) {
+                    eprintln!("{case} {variant}{proc}: {value} {unit} > {}", max.unwrap());
+                    failed = true;
+                }
+                if min.is_some_and(|min| *value < min) {
+                    eprintln!("{case} {variant}{proc}: {value} {unit} < {}", min.unwrap());
+                    failed = true;
+                }
             }
             let bounds = match (min, max) {
                 (Some(min), Some(max)) => format!("range [{min}, {max}]"),
@@ -1097,7 +1121,8 @@ fn execute() -> Result<i32> {
                 (None, Some(max)) => format!("absolute max {max}"),
                 (None, None) => unreachable!("at least one bound is required"),
             };
-            println!("Checked {count} observations; {bounds}. This is a budget check, not a statistical comparison.");
+            let scope = if per_process { "per-process medians" } else { "observations" };
+            println!("Checked {} {scope}; {bounds}. This is a budget check, not a statistical comparison.", points.len());
             if failed {
                 return Ok(1);
             }

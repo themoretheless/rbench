@@ -47,6 +47,44 @@ fn stat_summarizes_median_min_max() {
     assert_eq!(v.as_array().unwrap().len(), 0);
 }
 #[test]
+fn check_per_process_bounds_medians() {
+    let t = tempfile::tempdir().unwrap();
+    let path = t.path().join("run");
+    let mut run = rbench::Run::new();
+    run.status = rbench::Status::Complete;
+    run.cases.push(rbench::Case {
+        id: "c".into(),
+        contract: Default::default(),
+        metrics: vec![rbench::Metric::duration("wall", "test", "total")],
+    });
+    for (process, seq, val) in [(0u32, 0u64, "10"), (0, 1, "100"), (1, 0, "10"), (1, 1, "100")] {
+        run.observations.push(rbench::Observation {
+            case: "c".into(),
+            metric: "wall".into(),
+            variant: "candidate".into(),
+            process,
+            pair: None,
+            sequence: seq,
+            value: Some(val.into()),
+            operations: 1,
+            availability: rbench::Availability::Available,
+        });
+    }
+    run.save_new(&path).unwrap();
+    let p = path.to_str().unwrap();
+    // Per-observation: an individual 100 exceeds 50 -> fail.
+    assert_eq!(cli(&["check", p, "--metric", "wall", "--max", "50"]).status.code(), Some(1));
+    // Per-process medians are 55: max 60 passes, max 50 fails.
+    assert_eq!(
+        cli(&["check", p, "--metric", "wall", "--max", "60", "--per-process"]).status.code(),
+        Some(0)
+    );
+    assert_eq!(
+        cli(&["check", p, "--metric", "wall", "--max", "50", "--per-process"]).status.code(),
+        Some(1)
+    );
+}
+#[test]
 fn check_filter_narrows_cases() {
     let t = tempfile::tempdir().unwrap();
     let run = t.path().join("run");
