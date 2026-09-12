@@ -735,3 +735,41 @@ fn pilot_independent_confirmation_coverage() {
     assert!(covered as f64 / experiments as f64 > 0.94);
     assert!(false_positive as f64 / (experiments as f64) < 0.06);
 }
+
+#[test]
+fn throughput_derives_rates_and_scales_bytes_to_mib() {
+    let mk_case = |id: &str, unit: &str, count: &str| Case {
+        id: id.into(),
+        contract: BTreeMap::from([
+            ("work.unit".to_string(), unit.to_string()),
+            ("work.count".to_string(), count.to_string()),
+        ]),
+        metrics: vec![Metric::duration("wall", "test", "batch_total")],
+    };
+    let mut rec = Recorder::new();
+    rec.case(mk_case("elems", "elements", "10")).unwrap();
+    rec.case(mk_case("bytes", "bytes", "1048576")).unwrap();
+    // ops=1, 1e9 ns batch -> elems: 10 elements/s; bytes: 1048576 bytes/s = 1.0 MiB/s.
+    rec.observe("elems", "wall", 1_000_000_000).unwrap();
+    rec.observe("bytes", "wall", 1_000_000_000).unwrap();
+    let run = rec.finish().unwrap();
+    let series = report::throughput(&run).unwrap();
+    assert_eq!(series.len(), 2);
+    let elems = series.iter().find(|s| s.case == "elems").unwrap();
+    assert_eq!(elems.unit, "elements");
+    assert!((elems.values[0] - 10.0).abs() < 1e-6);
+    let bytes = series.iter().find(|s| s.case == "bytes").unwrap();
+    assert_eq!(bytes.unit, "MiB");
+    assert!((bytes.values[0] - 1.0).abs() < 1e-9);
+    // Cases without declared work units produce no series.
+    let mut plain = Recorder::new();
+    plain
+        .case(Case {
+            id: "plain".into(),
+            contract: BTreeMap::new(),
+            metrics: vec![Metric::duration("wall", "test", "batch_total")],
+        })
+        .unwrap();
+    plain.observe("plain", "wall", 1_000_000_000).unwrap();
+    assert!(report::throughput(&plain.finish().unwrap()).unwrap().is_empty());
+}

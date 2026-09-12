@@ -358,6 +358,20 @@ enum Action {
         #[arg(long)]
         json: bool,
     },
+    /// Derive work-unit throughput (units/s; MiB/s for bytes) from wall batches; optional budget.
+    Throughput {
+        run: PathBuf,
+        #[arg(long, default_value = "")]
+        filter: String,
+        /// Fail if any per-observation throughput exceeds this rate.
+        #[arg(long)]
+        max: Option<f64>,
+        /// Fail if any per-observation throughput falls below this rate.
+        #[arg(long)]
+        min: Option<f64>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Build benchmark executables without measuring (for project harness=false benches).
     Build {
         #[arg(long)]
@@ -706,6 +720,75 @@ fn execute() -> Result<i32> {
                         println!("{}", c.id);
                     }
                 }
+            }
+        }
+        Action::Throughput { run, filter, max, min, json } => {
+            if let (Some(min), Some(max)) = (min, max) {
+                if min > max {
+                    return Err(error("--min must not exceed --max"));
+                }
+            }
+            for (name, bound) in [("--max", max), ("--min", min)] {
+                if let Some(b) = bound {
+                    if !b.is_finite() || b < 0.0 {
+                        return Err(error(format!("{name} must be finite and nonnegative")));
+                    }
+                }
+            }
+            let r = load(run)?;
+            let gating = max.is_some() || min.is_some();
+            if gating && r.status != Status::Complete {
+                return Err(error("throughput gating requires complete run"));
+            }
+            let series: Vec<_> = report::throughput(&r)?
+                .into_iter()
+                .filter(|s| s.case.contains(&filter))
+                .collect();
+            let mut failed = false;
+            if gating {
+                for s in &series {
+                    for &v in &s.values {
+                        if max.is_some_and(|m| v > m) {
+                            eprintln!("{} {}: {v} {}/s > {}", s.case, s.variant, s.unit, max.unwrap());
+                            failed = true;
+                        }
+                        if min.is_some_and(|m| v < m) {
+                            eprintln!("{} {}: {v} {}/s < {}", s.case, s.variant, s.unit, min.unwrap());
+                            failed = true;
+                        }
+                    }
+                }
+            }
+            if json {
+                let rows: Vec<_> = series
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "case": s.case,
+                            "variant": s.variant,
+                            "unit": s.unit,
+                            "median": analysis::median(&s.values),
+                            "min": s.values.iter().copied().fold(f64::INFINITY, f64::min),
+                            "max": s.values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                            "samples": s.values.len(),
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+            } else {
+                for s in &series {
+                    println!(
+                        "{} [{}]: {:.4} {}/s (n={})",
+                        s.case,
+                        s.variant,
+                        analysis::median(&s.values),
+                        s.unit,
+                        s.values.len()
+                    );
+                }
+            }
+            if failed {
+                return Ok(1);
             }
         }
         Action::Compare {

@@ -12,6 +12,45 @@ fn help_and_cargo_invocation() {
     assert!(cli(&["rbench", "doctor"]).status.success());
 }
 #[test]
+fn throughput_derives_and_gates_work_units() {
+    let t = tempfile::tempdir().unwrap();
+    let run = t.path().join("run");
+    {
+        let mut rec = rbench::Recorder::new();
+        rec.case(rbench::Case {
+            id: "scan".into(),
+            contract: std::collections::BTreeMap::from([
+                ("work.unit".to_string(), "elements".to_string()),
+                ("work.count".to_string(), "10".to_string()),
+            ]),
+            metrics: vec![rbench::Metric::duration("wall", "test", "batch_total")],
+        })
+        .unwrap();
+        // ops=1, 1e9 ns batch -> 10 elements/s.
+        rec.observe("scan", "wall", 1_000_000_000).unwrap();
+        rec.finish().unwrap().save_new(&run).unwrap();
+    }
+    let path = run.to_str().unwrap();
+    let o = cli(&["throughput", path, "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let rows = v.as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["case"], "scan");
+    assert_eq!(rows[0]["unit"], "elements");
+    assert!((rows[0]["median"].as_f64().unwrap() - 10.0).abs() < 1e-6);
+    assert_eq!(rows[0]["samples"], 1);
+    // Gating: a floor above 10 fails, below passes; a ceiling below 10 fails.
+    assert_eq!(cli(&["throughput", path, "--min", "20"]).status.code(), Some(1));
+    assert_eq!(cli(&["throughput", path, "--min", "5"]).status.code(), Some(0));
+    assert_eq!(cli(&["throughput", path, "--max", "5"]).status.code(), Some(1));
+    // Misuse: inverted range.
+    assert_eq!(
+        cli(&["throughput", path, "--min", "100", "--max", "10"]).status.code(),
+        Some(2)
+    );
+}
+#[test]
 fn doctor_text_and_json_report_capabilities() {
     let o = cli(&["doctor"]);
     assert!(o.status.success());

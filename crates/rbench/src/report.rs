@@ -11,6 +11,65 @@ pub fn escape(s: &str) -> String {
         .replace(['\n', '\r'], " ")
         .replace('`', "&#96;")
 }
+/// Derived batch throughput for one case/variant.
+///
+/// `values` are per-observation useful-work rates in `unit` per second, computed
+/// from positive `wall` batches and the case's declared work units. For `bytes`
+/// the rate is scaled to MiB/s and `unit` is `MiB`. This is batch throughput, not
+/// a distribution of individual-operation latencies.
+#[derive(Clone, Debug)]
+pub struct ThroughputSeries {
+    pub case: String,
+    pub variant: String,
+    pub unit: String,
+    pub values: Vec<f64>,
+}
+/// Derive work-unit throughput series for every case that declared work units.
+///
+/// Cases without `work.unit`/`work.count`, and zero/unavailable durations, are
+/// omitted; the underlying observations are never modified.
+pub fn throughput(run: &Run) -> Result<Vec<ThroughputSeries>> {
+    let mut series = Vec::new();
+    for c in &run.cases {
+        if let (Some(unit), Some(count)) = (
+            c.contract.get("work.unit"),
+            c.contract
+                .get("work.count")
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|n| *n > 0),
+        ) {
+            let mut groups: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
+            for o in run
+                .observations
+                .iter()
+                .filter(|o| o.case == c.id && o.metric == "wall")
+            {
+                if let Some(n) = o.number()?.filter(|n| *n > 0.) {
+                    groups
+                        .entry(&o.variant)
+                        .or_default()
+                        .push(count as f64 * 1e9 / (n / o.operations as f64));
+                }
+            }
+            let is_bytes = unit == "bytes";
+            let display_unit = if is_bytes { "MiB" } else { unit.as_str() };
+            for (variant, mut values) in groups {
+                if is_bytes {
+                    for v in &mut values {
+                        *v /= 1048576.0;
+                    }
+                }
+                series.push(ThroughputSeries {
+                    case: c.id.clone(),
+                    variant: variant.to_string(),
+                    unit: display_unit.to_string(),
+                    values,
+                });
+            }
+        }
+    }
+    Ok(series)
+}
 pub fn markdown(run: &Run) -> Result<String> {
     run.validate()?;
     let mut out=format!("# rbench {}\n\nStatus: {:?}\n\n| Case | Metric | Median | Unit | Scope / statistic | Observations | Processes |\n|---|---|---:|---|---|---:|---:|\n",escape(&run.id),run.status);
@@ -62,42 +121,14 @@ pub fn markdown(run: &Run) -> Result<String> {
         }
     }
     let mut rates = String::new();
-    for c in &run.cases {
-        if let (Some(unit), Some(count)) = (
-            c.contract.get("work.unit"),
-            c.contract
-                .get("work.count")
-                .and_then(|v| v.parse::<u64>().ok())
-                .filter(|n| *n > 0),
-        ) {
-            let mut groups: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
-            for o in run
-                .observations
-                .iter()
-                .filter(|o| o.case == c.id && o.metric == "wall")
-            {
-                if let Some(n) = o.number()?.filter(|n| *n > 0.) {
-                    groups
-                        .entry(&o.variant)
-                        .or_default()
-                        .push(count as f64 * 1e9 / (n / o.operations as f64));
-                }
-            }
-            for (variant, v) in groups {
-                let (value, unit) = if unit == "bytes" {
-                    (median(&v) / 1048576.0, "MiB")
-                } else {
-                    (median(&v), unit.as_str())
-                };
-                rates.push_str(&format!(
-                    "| {} [{}] | {:.4} | {}/s |\n",
-                    escape(&c.id),
-                    escape(variant),
-                    value,
-                    escape(unit)
-                ));
-            }
-        }
+    for s in throughput(run)? {
+        rates.push_str(&format!(
+            "| {} [{}] | {:.4} | {}/s |\n",
+            escape(&s.case),
+            escape(&s.variant),
+            median(&s.values),
+            escape(&s.unit)
+        ));
     }
     if !rates.is_empty() {
         out.push_str("\n# Useful work throughput\n\n| Case | Median batch throughput | Unit |\n|---|---:|---|\n");
