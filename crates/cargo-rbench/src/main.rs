@@ -150,6 +150,8 @@ enum Action {
     Context {
         baseline: PathBuf,
         candidate: PathBuf,
+        #[arg(long)]
+        json: bool,
     },
     /// Descriptive performance history of an exact case/metric.
     Trend {
@@ -157,6 +159,8 @@ enum Action {
         case: String,
         #[arg(long)]
         metric: String,
+        #[arg(long)]
+        json: bool,
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
@@ -183,7 +187,11 @@ enum Action {
     /// Append a note without altering immutable run data.
     Note { run: PathBuf, text: String },
     /// Read the notes attached to an unchanged run.
-    Notes { run: PathBuf },
+    Notes {
+        run: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
     /// Check binaries, fixtures, cwd, deadlines and output without executing workers.
     Preflight {
         #[arg(long)]
@@ -333,6 +341,9 @@ enum Action {
         /// Absolute lower bound; fail if any observation falls below it.
         #[arg(long)]
         min: Option<f64>,
+        /// Only check cases whose id contains this substring.
+        #[arg(long, default_value = "")]
+        filter: String,
     },
     /// Import completed legacy Forma offscreen or paired directories.
     ImportForma {
@@ -454,16 +465,30 @@ fn execute() -> Result<i32> {
             if let Some(limit)=limit{if rows.len()>limit{rows.drain(0..rows.len()-limit);}}
             if json{println!("{}",serde_json::to_string_pretty(&rows)?);}else{for r in rows{println!("{} {} {} {}",r.id,r.status,r.path.display(),r.error.unwrap_or_default());}}
         },
-        Action::Context {baseline,candidate} => println!("{}",artifacts::context(&load(baseline)?,&load(candidate)?)),
-        Action::Trend {case,metric,output:path} => {
-            let text=artifacts::trend(&cli.store,&case,&metric)?;
-            let text=if path.as_ref().is_some_and(|p|p.extension().is_some_and(|x|x=="html")){artifacts::trend_html(&text)}else{text};output(&text,path)?;
+        Action::Context {baseline,candidate,json} => {
+            let (a,b)=(load(baseline)?,load(candidate)?);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&artifacts::context_diff(&a,&b))?);
+            } else {
+                println!("{}", artifacts::context(&a,&b));
+            }
+        },
+        Action::Trend {case,metric,json,output:path} => {
+            if json {
+                output(&serde_json::to_string_pretty(&artifacts::trend_points(&cli.store,&case,&metric)?)?, path)?;
+            } else {
+                let text=artifacts::trend(&cli.store,&case,&metric)?;
+                let text=if path.as_ref().is_some_and(|p|p.extension().is_some_and(|x|x=="html")){artifacts::trend_html(&text)}else{text};output(&text,path)?;
+            }
         },
         Action::Export {run,format,output:path} => output(&artifacts::export(&load(run)?,&format)?,Some(path))?,
         Action::Bundle {run,output} => artifacts::bundle(&cli.store,&project::resolve(&cli.store,&run)?,&output)?,
         Action::Unpack {bundle,output} => artifacts::unpack(&bundle,&output)?,
         Action::Note {run,text} => artifacts::note(&cli.store,&project::resolve(&cli.store,&run)?,&text)?,
-        Action::Notes {run} => {for n in artifacts::notes(&cli.store,&project::resolve(&cli.store,&run)?)?{println!("{}: {}",n.created_ns,n.text);}},
+        Action::Notes {run,json} => {
+            let notes=artifacts::notes(&cli.store,&project::resolve(&cli.store,&run)?)?;
+            if json{println!("{}",serde_json::to_string_pretty(&notes)?);}else{for n in notes{println!("{}: {}",n.created_ns,n.text);}}
+        },
         Action::Preflight {plan,output} => println!("{}",serde_json::to_string_pretty(&runner::preflight(serde_json::from_slice(&std::fs::read(plan)?)?,&output)?)?),
         Action::GitCompare {repo,baseline,candidate,target,manifest_path,repetitions,offline,output,args} => git_run::run(git_run::Request{repo:&repo,base:&baseline,head:&candidate,target:&target,manifest:&manifest_path,output:&output,repetitions,offline,args})?,
         Action::Ci {output:path} => output(include_str!("ci-template.yml"),Some(path))?,
@@ -867,7 +892,7 @@ fn execute() -> Result<i32> {
                 return Err(error("Cargo benchmark build failed"));
             }
         }
-        Action::Check { run, metric, max, min } => {
+        Action::Check { run, metric, max, min, filter } => {
             if max.is_none() && min.is_none() {
                 return Err(error("provide --max and/or --min"));
             }
@@ -889,7 +914,11 @@ fn execute() -> Result<i32> {
             }
             let mut count = 0;
             let mut failed = false;
-            for o in run.observations.iter().filter(|o| o.metric == metric) {
+            for o in run
+                .observations
+                .iter()
+                .filter(|o| o.metric == metric && o.case.contains(&filter))
+            {
                 count += 1;
                 let mut value = o
                     .number()?

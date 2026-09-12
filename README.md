@@ -83,8 +83,8 @@ cargo rbench compare .rbench/ab --threshold 5 --check
 cargo rbench compare .rbench/old .rbench/new --json
 # Абсолютный бюджет на каждое наблюдение, без статистического вывода:
 cargo rbench check .rbench/forma --metric geometry.uploads --max 0
-# Нижняя граница или диапазон на конкретную метрику:
-cargo rbench check .rbench/forma --metric frame.completed --min 8 --max 16
+# Нижняя граница или диапазон на конкретную метрику (можно сузить кейсы через --filter):
+cargo rbench check .rbench/forma --metric frame.completed --min 8 --max 16 --filter static
 # Производная throughput (units/s; MiB/s для bytes) с бюджетом:
 cargo rbench throughput .rbench/run --min 1000
 ```

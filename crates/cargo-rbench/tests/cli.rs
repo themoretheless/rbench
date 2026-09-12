@@ -12,6 +12,79 @@ fn help_and_cargo_invocation() {
     assert!(cli(&["rbench", "doctor"]).status.success());
 }
 #[test]
+fn check_filter_narrows_cases() {
+    let t = tempfile::tempdir().unwrap();
+    let run = t.path().join("run");
+    {
+        let mut rec = rbench::Recorder::new();
+        for (id, val) in [("fast", 10u128), ("slow", 100u128)] {
+            rec.case(rbench::Case {
+                id: id.into(),
+                contract: Default::default(),
+                metrics: vec![rbench::Metric::duration("wall", "test", "total")],
+            })
+            .unwrap();
+            rec.observe(id, "wall", val).unwrap();
+        }
+        rec.finish().unwrap().save_new(&run).unwrap();
+    }
+    let p = run.to_str().unwrap();
+    let code = |args: &[&str]| {
+        let mut all = vec!["check", p, "--metric", "wall", "--max", "50"];
+        all.extend_from_slice(args);
+        cli(&all).status.code()
+    };
+    assert_eq!(code(&[]), Some(1)); // slow (100) > 50
+    assert_eq!(code(&["--filter", "fast"]), Some(0)); // only fast (10)
+    assert_eq!(code(&["--filter", "slow"]), Some(1)); // only slow (100)
+    assert_eq!(code(&["--filter", "nope"]), Some(2)); // no case matched -> metric not found
+}
+#[test]
+fn notes_json_output() {
+    let t = tempfile::tempdir().unwrap();
+    let run = t.path().join("run");
+    simple_run(&run);
+    let store = t.path().to_str().unwrap();
+    let p = run.to_str().unwrap();
+    assert!(cli(&["--store", store, "note", p, "hello note"]).status.success());
+    let o = cli(&["--store", store, "notes", p, "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let notes = v.as_array().unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0]["text"], "hello note");
+    assert_eq!(notes[0]["run_sha256"].as_str().unwrap().len(), 64);
+}
+#[test]
+fn context_and_trend_json_outputs() {
+    let t = tempfile::tempdir().unwrap();
+    let store = t.path();
+    let a = simple_run(&store.join("a"));
+    // context --json: identical runs -> no differences.
+    let o = cli(&["context", store.join("a").to_str().unwrap(), store.join("a").to_str().unwrap(), "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v.as_array().unwrap().len(), 0);
+    // A differing environment key surfaces exactly one diff.
+    let mut b = a.clone();
+    b.environment.insert("os".into(), "other-os".into());
+    b.save_new(store.join("b")).unwrap();
+    let o = cli(&["context", store.join("a").to_str().unwrap(), store.join("b").to_str().unwrap(), "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let diffs = v.as_array().unwrap();
+    assert_eq!(diffs.len(), 1);
+    assert_eq!(diffs[0]["key"], "environment.os");
+    assert_eq!(diffs[0]["b"], "other-os");
+    // trend --json: one complete run with case "=unsafe,case"/metric "wall" value 42.
+    let o = cli(&["--store", store.to_str().unwrap(), "trend", "--case", "=unsafe,case", "--metric", "wall", "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let points = v.as_array().unwrap();
+    assert!(!points.is_empty());
+    assert_eq!(points[0]["unit"], "ns");
+    assert!((points[0]["median"].as_f64().unwrap() - 42.0).abs() < 1e-6);
+}
+#[test]
 fn history_filters_by_status_and_limit() {
     let t = tempfile::tempdir().unwrap();
     let store = t.path();

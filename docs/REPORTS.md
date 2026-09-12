@@ -26,6 +26,8 @@ cargo rbench list .rbench/sort --json --filter unstable
 
 `cargo rbench history` перечисляет запуски хранилища в хронологическом порядке; `--status` (например `complete`/`failed`, регистр не важен) и `--limit N` (только последние N) сужают список, `--json` даёт машинный вывод.
 
+`cargo rbench context A B` показывает различия окружения/provenance/контрактов двух запусков, `cargo rbench trend --case C --metric M` — историю медиан по кейсу/метрике. У обоих есть `--json` для машинной обработки (`context` — список `{key,a,b}`, `trend` — точки `{id,revision,median,unit,context}`).
+
 ## Интерпретация
 
 - Regression — обнаружена регрессия.

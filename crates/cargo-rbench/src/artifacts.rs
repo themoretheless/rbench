@@ -312,8 +312,14 @@ pub fn unpack(input: &Path, out: &Path) -> Result<()> {
     }
     Ok(())
 }
-pub fn context(a: &Run, b: &Run) -> String {
-    let mut lines = vec!["# Run context differences".to_string()];
+#[derive(Serialize)]
+pub struct ContextDiff {
+    pub key: String,
+    pub a: Option<String>,
+    pub b: Option<String>,
+}
+/// Keys whose environment/provenance/contract values differ between two runs.
+pub fn context_diff(a: &Run, b: &Run) -> Vec<ContextDiff> {
     let maps = |r: &Run| {
         let mut m = std::collections::BTreeMap::new();
         for (k, v) in &r.environment {
@@ -330,23 +336,44 @@ pub fn context(a: &Run, b: &Run) -> String {
     let a = maps(a);
     let b = maps(b);
     let keys: std::collections::BTreeSet<_> = a.keys().chain(b.keys()).collect();
+    let mut diffs = Vec::new();
     for k in keys {
         if a.get(k) != b.get(k) {
-            lines.push(format!(
-                "\n- {}\n  A: {}\n  B: {}",
-                rbench::report::escape(k),
-                rbench::report::escape(a.get(k).map(String::as_str).unwrap_or("<missing>")),
-                rbench::report::escape(b.get(k).map(String::as_str).unwrap_or("<missing>"))
-            ));
+            diffs.push(ContextDiff {
+                key: k.clone(),
+                a: a.get(k).cloned(),
+                b: b.get(k).cloned(),
+            });
         }
+    }
+    diffs
+}
+pub fn context(a: &Run, b: &Run) -> String {
+    let mut lines = vec!["# Run context differences".to_string()];
+    for d in context_diff(a, b) {
+        lines.push(format!(
+            "\n- {}\n  A: {}\n  B: {}",
+            rbench::report::escape(&d.key),
+            rbench::report::escape(d.a.as_deref().unwrap_or("<missing>")),
+            rbench::report::escape(d.b.as_deref().unwrap_or("<missing>"))
+        ));
     }
     if lines.len() == 1 {
         lines.push("No differences.".into());
     }
     lines.join("\n")
 }
-pub fn trend(store: &Path, case: &str, metric: &str) -> Result<String> {
-    let mut out=String::from("# History of process medians\n\n| Run | Revision | Candidate median | Unit | Context SHA256 |\n|---|---|---:|---|---|\n");
+#[derive(Serialize)]
+pub struct TrendPoint {
+    pub id: String,
+    pub revision: Option<String>,
+    pub median: Option<f64>,
+    pub unit: String,
+    pub context: String,
+}
+/// Per-run candidate median for one case/metric across the store's complete runs.
+pub fn trend_points(store: &Path, case: &str, metric: &str) -> Result<Vec<TrendPoint>> {
+    let mut points = Vec::new();
     for h in history(store)?
         .into_iter()
         .filter(|h| h.status == "Complete")
@@ -383,19 +410,36 @@ pub fn trend(store: &Path, case: &str, metric: &str) -> Result<String> {
             .values()
             .map(|v| rbench::analysis::median(v))
             .collect();
-        let value = if unavailable || medians.is_empty() {
-            "n/a".into()
+        let median = if unavailable || medians.is_empty() {
+            None
         } else {
-            format!("{:.4}", rbench::analysis::median(&medians))
+            Some(rbench::analysis::median(&medians))
         };
         let context = hash(&serde_json::to_string(&(&r.environment, c))?);
+        points.push(TrendPoint {
+            id: h.id,
+            revision: h.revision,
+            median,
+            unit: m.unit.clone(),
+            context,
+        });
+    }
+    Ok(points)
+}
+pub fn trend(store: &Path, case: &str, metric: &str) -> Result<String> {
+    let mut out=String::from("# History of process medians\n\n| Run | Revision | Candidate median | Unit | Context SHA256 |\n|---|---|---:|---|---|\n");
+    for p in trend_points(store, case, metric)? {
+        let value = match p.median {
+            Some(v) => format!("{v:.4}"),
+            None => "n/a".into(),
+        };
         out.push_str(&format!(
             "| {} | {} | {} | {} | {} |\n",
-            rbench::report::escape(&h.id),
-            rbench::report::escape(h.revision.as_deref().unwrap_or("unrecorded")),
+            rbench::report::escape(&p.id),
+            rbench::report::escape(p.revision.as_deref().unwrap_or("unrecorded")),
             value,
-            rbench::report::escape(&m.unit),
-            context
+            rbench::report::escape(&p.unit),
+            p.context
         ));
     }
     out.push_str("\nDescriptive history only. Different context hashes must not be interpreted as a code effect. Each point summarizes independent process medians; no significance claim.\n");
