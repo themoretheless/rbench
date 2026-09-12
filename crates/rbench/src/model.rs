@@ -54,6 +54,19 @@ impl Metric {
             direction: Direction::Lower,
         }
     }
+    /// Reduce an observation to a per-operation value for this metric: a
+    /// `batch_total` statistic is divided by the operation count, other
+    /// statistics are used as-is. Returns `None` when the observation is
+    /// unavailable. Single source of truth for report, trend and stat.
+    pub fn reduce(&self, o: &Observation) -> Result<Option<f64>> {
+        Ok(o.number()?.map(|n| {
+            if self.statistic == "batch_total" {
+                n / o.operations as f64
+            } else {
+                n
+            }
+        }))
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Case {

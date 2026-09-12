@@ -89,12 +89,8 @@ pub fn markdown(run: &Run) -> Result<String> {
                 let mut unavailable = vec![];
                 for o in &rows {
                     processes.insert(o.process);
-                    match o.number()? {
-                        Some(n) => values.push(if m.statistic == "batch_total" {
-                            n / o.operations as f64
-                        } else {
-                            n
-                        }),
+                    match m.reduce(o)? {
+                        Some(v) => values.push(v),
                         None => unavailable.push(format!("{:?}", o.availability)),
                     }
                 }

@@ -254,6 +254,46 @@ fn list_text_ids_and_json_metrics_with_counts() {
     assert_eq!(v.as_array().unwrap().len(), 0);
 }
 #[test]
+fn export_json_profiles_doctor_probe_and_baseline_ops() {
+    let t = tempfile::tempdir().unwrap();
+    let run = t.path().join("run");
+    simple_run(&run);
+    let p = run.to_str().unwrap();
+    // export --format json: full run document; unknown formats error.
+    assert!(cli(&["export", p, "--format", "json", "-o", t.path().join("e.json").to_str().unwrap()])
+        .status
+        .success());
+    let doc: serde_json::Value =
+        serde_json::from_slice(&fs::read(t.path().join("e.json")).unwrap()).unwrap();
+    assert!(doc["observations"].is_array());
+    assert!(!cli(&["export", p, "--format", "xml", "-o", t.path().join("x").to_str().unwrap()])
+        .status
+        .success());
+    // profiles --json
+    let v: serde_json::Value =
+        serde_json::from_slice(&cli(&["profiles", "--json"]).stdout).unwrap();
+    assert_eq!(v["profiles"][0]["name"], "quick");
+    // doctor --probe exposes logical_cpus only when requested
+    let v: serde_json::Value =
+        serde_json::from_slice(&cli(&["doctor", "--json", "--probe"]).stdout).unwrap();
+    assert!(v["logical_cpus"].is_number());
+    let v: serde_json::Value = serde_json::from_slice(&cli(&["doctor", "--json"]).stdout).unwrap();
+    assert!(v.get("logical_cpus").is_none());
+    // baseline list --json + remove
+    let store = t.path().join("store");
+    let s = store.to_str().unwrap();
+    assert!(cli(&["--store", s, "baseline", "save", "main", p]).status.success());
+    let v: serde_json::Value =
+        serde_json::from_slice(&cli(&["--store", s, "baseline", "list", "--json"]).stdout).unwrap();
+    assert_eq!(v.as_array().unwrap().len(), 1);
+    assert_eq!(v[0]["name"], "main");
+    assert!(cli(&["--store", s, "baseline", "remove", "main"]).status.success());
+    let v: serde_json::Value =
+        serde_json::from_slice(&cli(&["--store", s, "baseline", "list", "--json"]).stdout).unwrap();
+    assert_eq!(v.as_array().unwrap().len(), 0);
+    assert!(!cli(&["--store", s, "baseline", "remove", "main"]).status.success());
+}
+#[test]
 fn completions_generate_per_shell_and_reject_unknown() {
     for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
         let o = cli(&["completions", shell]);

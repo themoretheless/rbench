@@ -15,6 +15,10 @@ pub use model::*;
 pub use suite::{Config, DropPolicy, Suite};
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+/// Re-export of [`std::hint::black_box`] so benchmarks can call `rbench::black_box`
+/// without importing `std::hint` directly.
+pub use std::hint::black_box;
+
 pub fn error(message: impl Into<String>) -> Box<dyn std::error::Error + Send + Sync> {
     std::io::Error::other(message.into()).into()
 }

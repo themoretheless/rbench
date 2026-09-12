@@ -1,6 +1,10 @@
 # rbench
 
-Своя Rust benchmark-библиотека и runner: короткие операции, отдельные процессы и сценарии приложения в одном формате наблюдений. Реализован рабочий прототип 0.1.0; полная приёмка и переносимость ещё проверяются.
+[![CI](https://github.com/themoretheless/rbench/actions/workflows/ci.yml/badge.svg)](https://github.com/themoretheless/rbench/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/tag/themoretheless/rbench?label=release&sort=semver)](https://github.com/themoretheless/rbench/releases)
+![MSRV](https://img.shields.io/badge/MSRV-1.85-blue)
+
+Своя Rust benchmark-библиотека и runner: короткие операции, отдельные процессы и сценарии приложения в одном формате наблюдений. Рабочий прототип; полная приёмка и переносимость ещё проверяются (последний релиз — на странице releases).
 
 Новые удобства: **init, обнаружение workspace targets, именованные baseline, прогресс/ETA, матрицы параметров, проверка результата, HTML-таблицы, бюджеты и Forma golden-сценарии**. [Полный рабочий процесс](docs/USABILITY.md).
 
@@ -56,6 +60,8 @@ Cargo не выбирает «самый свежий семвер-тег» из
 ```
 
 Пуш в `main` запускает [`release.yml`](.github/workflows/release.yml) — тонкую обёртку над общим reusable-workflow `themoretheless/.github/.github/workflows/release-rust-library.yml`. Он сравнивает версию `rbench` в `Cargo.toml` до/после пуша и, если она изменилась: гоняет Clippy и тесты, затем создаёт тег `v<version>` и GitHub Release с авто-заметками. Секреты не нужны — используется встроенный `GITHUB_TOKEN` (rustfmt отключён: `run_fmt: false`). Если версия не менялась, релиз не создаётся. После успешного релиза ветка `release` переводится на этот коммит, поэтому потребители с `branch = "release"` всегда получают последний выпуск.
+
+Формат и MSRV: код намеренно компактный и **не отформатирован `rustfmt`** (в релизе `run_fmt: false`); правки принимаются в том же стиле, CI его не навязывает. Минимальная поддерживаемая версия Rust — **1.85** (проверяется отдельной джобой CI); обновление MSRV — осознанное изменение с бампом `rust-version`.
 
 ```rust
 use rbench::{DropPolicy, Suite};

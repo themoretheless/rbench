@@ -134,7 +134,10 @@ enum Action {
     ExportPreview { run: PathBuf },
 
     /// Show the effort and limitations of named worker sampling profiles.
-    Profiles,
+    Profiles {
+        #[arg(long)]
+        json: bool,
+    },
     /// List recorded runs chronologically; last resolves the latest complete run.
     History {
         #[arg(long)]
@@ -411,6 +414,9 @@ enum Action {
         /// Emit capabilities as JSON.
         #[arg(long)]
         json: bool,
+        /// Additionally probe cheap host facts (logical CPUs); still never probes GPU/window.
+        #[arg(long)]
+        probe: bool,
     },
     /// Print a shell completion script to stdout; does not modify the shell configuration.
     Completions {
@@ -441,8 +447,18 @@ struct StatRow {
 
 #[derive(Subcommand)]
 enum BaselineAction {
-    Save { name: String, run: PathBuf },
-    List,
+    Save {
+        name: String,
+        run: PathBuf,
+    },
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove a named baseline reference; the referenced run is untouched.
+    Remove {
+        name: String,
+    },
 }
 fn output(text: &str, path: Option<PathBuf>) -> Result<()> {
     if let Some(p) = path {
@@ -482,7 +498,20 @@ fn execute() -> Result<i32> {
             println!("{}",serde_json::to_string_pretty(&serde_json::json!({"file_bytes":{"run.json":std::fs::metadata(if resolved.is_dir(){resolved.join("run.json")}else{resolved.clone()})?.len(),"report.html":report::html_run(&r)?.len(),"notes.json":serde_json::to_string_pretty(&notes)?.len()},"run_id":r.id,"cases":r.cases.len(),"observations":r.observations.len(),"environment_keys":r.environment.keys().collect::<Vec<_>>(),"provenance_keys":r.provenance.keys().collect::<Vec<_>>(),"notes":notes.len(),"included":["run.json: all contracts, environment, provenance, observations and notes","report.html: derived report","notes.json: sidecar user notes"],"excluded":["worker logs","binaries","fixtures","plan"],"review":"Inspect run and notes before sharing. Preview does not certify absence of unknown or transformed secrets."}))?);
         },
 
-        Action::Profiles => println!("quick: 8 samples × 1 ms + 10 ms warmup/case; smoke only\nnormal: 30 × 5 ms + 50 ms warmup/case\nthorough: 100 × 10 ms + 200 ms warmup/case\nUse worker --profile NAME after --. CLI --repetitions controls independent processes separately. Profiles do not guarantee confidence/precision."),
+        Action::Profiles { json } => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "profiles": [
+                        {"name":"quick","samples":8,"sample_ms":1,"warmup_ms":10,"note":"smoke only"},
+                        {"name":"normal","samples":30,"sample_ms":5,"warmup_ms":50},
+                        {"name":"thorough","samples":100,"sample_ms":10,"warmup_ms":200},
+                    ],
+                    "note":"Use worker --profile NAME after --. CLI --repetitions controls independent processes separately. Profiles do not guarantee confidence/precision.",
+                }))?);
+            } else {
+                println!("quick: 8 samples × 1 ms + 10 ms warmup/case; smoke only\nnormal: 30 × 5 ms + 50 ms warmup/case\nthorough: 100 × 10 ms + 200 ms warmup/case\nUse worker --profile NAME after --. CLI --repetitions controls independent processes separately. Profiles do not guarantee confidence/precision.");
+            }
+        }
         Action::History {json,status,limit} => {
             let mut rows=artifacts::history(&cli.store)?;
             if let Some(status)=&status{rows.retain(|r|r.status.eq_ignore_ascii_case(status));}
@@ -626,7 +655,20 @@ fn execute() -> Result<i32> {
             BaselineAction::Save { name, run } => {
                 project::save_baseline(&cli.store, &name, &project::resolve(&cli.store, &run)?)?
             }
-            BaselineAction::List => project::baselines(&cli.store)?,
+            BaselineAction::List { json } => {
+                let entries = project::baselines(&cli.store)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&entries)?);
+                } else {
+                    for e in entries {
+                        println!("@{} → {}", e.name, e.run.display());
+                    }
+                }
+            }
+            BaselineAction::Remove { name } => {
+                project::remove_baseline(&cli.store, &name)?;
+                println!("Removed baseline @{name}");
+            }
         },
         Action::Gate {
             run,
@@ -1064,29 +1106,39 @@ fn execute() -> Result<i32> {
                 return Ok(1);
             }
         }
-        Action::Doctor { json } => {
+        Action::Doctor { json, probe } => {
             let process_tree_cleanup = if cfg!(unix) {
                 "Unix process groups"
             } else {
                 "direct child only; descendants unsupported"
             };
+            let logical_cpus = probe
+                .then(|| std::thread::available_parallelism().map(|n| n.get()).ok())
+                .flatten();
             if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "rbench": env!("CARGO_PKG_VERSION"),
-                        "os": std::env::consts::OS,
-                        "arch": std::env::consts::ARCH,
-                        "clock": "std::time::Instant",
-                        "process_tree_cleanup": process_tree_cleanup,
-                        "gpu": "supplied by scenario (not probed)",
-                        "window": "supplied by scenario (not probed)",
-                        "isolation": "local runner lease only",
-                        "statistics": "independent process units required",
-                    }))?
-                );
+                let mut doc = serde_json::json!({
+                    "rbench": env!("CARGO_PKG_VERSION"),
+                    "os": std::env::consts::OS,
+                    "arch": std::env::consts::ARCH,
+                    "clock": "std::time::Instant",
+                    "process_tree_cleanup": process_tree_cleanup,
+                    "gpu": "supplied by scenario (not probed)",
+                    "window": "supplied by scenario (not probed)",
+                    "isolation": "local runner lease only",
+                    "statistics": "independent process units required",
+                });
+                if probe {
+                    doc["logical_cpus"] = serde_json::json!(logical_cpus);
+                }
+                println!("{}", serde_json::to_string_pretty(&doc)?);
             } else {
                 println!("rbench {}\nOS: {}\nArch: {}\nClock: std::time::Instant\nProcess tree cleanup: {}\nGPU: supplied by scenario (not probed)\nWindow: supplied by scenario (not probed)\nIsolation: local runner lease only\nStatistics: independent process units required",env!("CARGO_PKG_VERSION"),std::env::consts::OS,std::env::consts::ARCH,process_tree_cleanup);
+                if probe {
+                    match logical_cpus {
+                        Some(n) => println!("Logical CPUs: {n}"),
+                        None => println!("Logical CPUs: unavailable"),
+                    }
+                }
             }
         }
         Action::Completions { shell } => {

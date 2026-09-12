@@ -275,10 +275,17 @@ pub fn resolve(store: &Path, value: &Path) -> Result<PathBuf> {
         Ok(value.into())
     }
 }
-pub fn baselines(store: &Path) -> Result<()> {
+#[derive(Serialize)]
+pub struct BaselineEntry {
+    pub name: String,
+    pub run: PathBuf,
+    pub sha256: String,
+}
+pub fn baselines(store: &Path) -> Result<Vec<BaselineEntry>> {
     let dir = store.join("baselines");
+    let mut entries = Vec::new();
     if !dir.exists() {
-        return Ok(());
+        return Ok(entries);
     }
     let mut files = fs::read_dir(dir)?
         .map(|e| e.map(|e| e.path()))
@@ -287,12 +294,21 @@ pub fn baselines(store: &Path) -> Result<()> {
     for p in files {
         if p.extension().is_some_and(|e| e == "json") {
             let b: Baseline = serde_json::from_slice(&fs::read(&p)?)?;
-            println!(
-                "@{} → {}",
-                p.file_stem().unwrap().to_string_lossy(),
-                b.run.display()
-            );
+            entries.push(BaselineEntry {
+                name: p.file_stem().unwrap().to_string_lossy().into_owned(),
+                run: b.run,
+                sha256: b.sha256,
+            });
         }
     }
+    Ok(entries)
+}
+/// Remove a named baseline reference; the referenced run itself is untouched.
+pub fn remove_baseline(store: &Path, name: &str) -> Result<()> {
+    let path = name_path(store, name)?;
+    if !path.is_file() {
+        return Err(error(format!("baseline @{name} does not exist")));
+    }
+    fs::remove_file(path)?;
     Ok(())
 }

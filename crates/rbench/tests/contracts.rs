@@ -773,3 +773,48 @@ fn throughput_derives_rates_and_scales_bytes_to_mib() {
     plain.observe("plain", "wall", 1_000_000_000).unwrap();
     assert!(report::throughput(&plain.finish().unwrap()).unwrap().is_empty());
 }
+
+#[test]
+fn recorder_work_units_black_box_and_metric_reduce() {
+    // black_box is re-exported at the crate root.
+    assert_eq!(rbench::black_box(7u32), 7);
+    // Metric::reduce divides batch_total by operations and leaves others as-is.
+    let obs = |ops: u64| Observation {
+        case: "c".into(),
+        metric: "wall".into(),
+        variant: "candidate".into(),
+        process: 0,
+        pair: None,
+        sequence: 0,
+        value: Some("100".into()),
+        operations: ops,
+        availability: Availability::Available,
+    };
+    assert_eq!(Metric::duration("wall", "s", "total").reduce(&obs(4)).unwrap(), Some(100.0));
+    assert_eq!(Metric::duration("wall", "s", "batch_total").reduce(&obs(4)).unwrap(), Some(25.0));
+    // Recorder::work_units populates the contract so throughput derives.
+    let mut rec = Recorder::new();
+    rec.case(Case {
+        id: "scan".into(),
+        contract: BTreeMap::new(),
+        metrics: vec![Metric::duration("wall", "s", "batch_total")],
+    })
+    .unwrap();
+    rec.work_units("scan", "elements", 10).unwrap();
+    rec.observe("scan", "wall", 1_000_000_000).unwrap(); // ops=1 -> 10 elements/s
+    let series = report::throughput(&rec.finish().unwrap()).unwrap();
+    assert_eq!(series.len(), 1);
+    assert_eq!(series[0].unit, "elements");
+    assert!((series[0].values[0] - 10.0).abs() < 1e-6);
+    // Invalid work units are rejected.
+    let mut bad = Recorder::new();
+    bad.case(Case {
+        id: "x".into(),
+        contract: BTreeMap::new(),
+        metrics: vec![Metric::duration("wall", "s", "total")],
+    })
+    .unwrap();
+    assert!(bad.work_units("x", "", 5).is_err());
+    assert!(bad.work_units("x", "bytes", 0).is_err());
+    assert!(bad.work_units("missing", "bytes", 5).is_err());
+}
