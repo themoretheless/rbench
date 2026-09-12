@@ -12,6 +12,41 @@ fn help_and_cargo_invocation() {
     assert!(cli(&["rbench", "doctor"]).status.success());
 }
 #[test]
+fn stat_summarizes_median_min_max() {
+    let t = tempfile::tempdir().unwrap();
+    let run = t.path().join("run");
+    {
+        let mut rec = rbench::Recorder::new();
+        rec.case(rbench::Case {
+            id: "c".into(),
+            contract: Default::default(),
+            metrics: vec![rbench::Metric::duration("wall", "test", "total")],
+        })
+        .unwrap();
+        for v in [10u128, 20, 30] {
+            rec.observe("c", "wall", v).unwrap();
+        }
+        rec.finish().unwrap().save_new(&run).unwrap();
+    }
+    let p = run.to_str().unwrap();
+    let o = cli(&["stat", p, "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let rows = v.as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["case"], "c");
+    assert_eq!(rows[0]["metric"], "wall");
+    assert_eq!(rows[0]["samples"], 3);
+    assert_eq!(rows[0]["available"], 3);
+    assert!((rows[0]["median"].as_f64().unwrap() - 20.0).abs() < 1e-9);
+    assert!((rows[0]["min"].as_f64().unwrap() - 10.0).abs() < 1e-9);
+    assert!((rows[0]["max"].as_f64().unwrap() - 30.0).abs() < 1e-9);
+    // A non-matching metric filter yields an empty array.
+    let o = cli(&["stat", p, "--json", "--metric", "nope"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v.as_array().unwrap().len(), 0);
+}
+#[test]
 fn check_filter_narrows_cases() {
     let t = tempfile::tempdir().unwrap();
     let run = t.path().join("run");

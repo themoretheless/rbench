@@ -389,6 +389,16 @@ enum Action {
         #[arg(long)]
         json: bool,
     },
+    /// Summarize one run's per-case/metric median, min and max (no comparison).
+    Stat {
+        run: PathBuf,
+        #[arg(long, default_value = "")]
+        filter: String,
+        #[arg(long, default_value = "")]
+        metric: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Build benchmark executables without measuring (for project harness=false benches).
     Build {
         #[arg(long)]
@@ -413,6 +423,20 @@ enum Uncertainty {
     Fail,
     Warn,
     Record,
+}
+#[derive(serde::Serialize)]
+struct StatRow {
+    case: String,
+    metric: String,
+    variant: String,
+    unit: String,
+    statistic: String,
+    samples: usize,
+    processes: usize,
+    available: usize,
+    median: Option<f64>,
+    min: Option<f64>,
+    max: Option<f64>,
 }
 
 #[derive(Subcommand)]
@@ -825,6 +849,82 @@ fn execute() -> Result<i32> {
             }
             if failed {
                 return Ok(1);
+            }
+        }
+        Action::Stat { run, filter, metric, json } => {
+            let r = load(run)?;
+            let mut rows: Vec<StatRow> = Vec::new();
+            for c in r.cases.iter().filter(|c| c.id.contains(&filter)) {
+                for m in c.metrics.iter().filter(|m| m.id.contains(&metric)) {
+                    let mut groups: std::collections::BTreeMap<
+                        &str,
+                        (Vec<f64>, std::collections::BTreeSet<u32>, usize),
+                    > = std::collections::BTreeMap::new();
+                    for o in r
+                        .observations
+                        .iter()
+                        .filter(|o| o.case == c.id && o.metric == m.id)
+                    {
+                        let entry = groups.entry(&o.variant).or_default();
+                        entry.1.insert(o.process);
+                        entry.2 += 1;
+                        if let Some(v) = o.number()? {
+                            entry.0.push(if m.statistic == "batch_total" {
+                                v / o.operations as f64
+                            } else {
+                                v
+                            });
+                        }
+                    }
+                    for (variant, (values, processes, samples)) in groups {
+                        let (median, min, max) = if values.is_empty() {
+                            (None, None, None)
+                        } else {
+                            (
+                                Some(analysis::median(&values)),
+                                Some(values.iter().copied().fold(f64::INFINITY, f64::min)),
+                                Some(values.iter().copied().fold(f64::NEG_INFINITY, f64::max)),
+                            )
+                        };
+                        rows.push(StatRow {
+                            case: c.id.clone(),
+                            metric: m.id.clone(),
+                            variant: variant.to_string(),
+                            unit: m.unit.clone(),
+                            statistic: m.statistic.clone(),
+                            samples,
+                            processes: processes.len(),
+                            available: values.len(),
+                            median,
+                            min,
+                            max,
+                        });
+                    }
+                }
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+            } else {
+                for s in &rows {
+                    match s.median {
+                        Some(v) => println!(
+                            "{} [{}] {}: median {:.4} min {:.4} max {:.4} {} (n={}, p={})",
+                            s.case,
+                            s.variant,
+                            s.metric,
+                            v,
+                            s.min.unwrap(),
+                            s.max.unwrap(),
+                            s.unit,
+                            s.samples,
+                            s.processes
+                        ),
+                        None => println!(
+                            "{} [{}] {}: n/a {} (n={}, p={})",
+                            s.case, s.variant, s.metric, s.unit, s.samples, s.processes
+                        ),
+                    }
+                }
             }
         }
         Action::Compare {

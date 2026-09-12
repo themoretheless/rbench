@@ -28,6 +28,8 @@ cargo rbench list .rbench/sort --json --filter unstable
 
 `cargo rbench context A B` показывает различия окружения/provenance/контрактов двух запусков, `cargo rbench trend --case C --metric M` — историю медиан по кейсу/метрике. У обоих есть `--json` для машинной обработки (`context` — список `{key,a,b}`, `trend` — точки `{id,revision,median,unit,context}`).
 
+`cargo rbench stat RUN` даёт быструю сводку одного запуска: по каждому кейсу/метрике/варианту median, min, max и счётчики (`samples`/`processes`/`available`), с фильтрами `--filter`/`--metric` и `--json`. Это не сравнение и не статистический вывод — просто описательная сводка (в отличие от `report`, который строит сравнения и показывает только медиану).
+
 ## Интерпретация
 
 - Regression — обнаружена регрессия.
