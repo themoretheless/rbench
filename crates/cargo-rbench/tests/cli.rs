@@ -45,6 +45,17 @@ fn stat_summarizes_median_min_max() {
     let o = cli(&["stat", p, "--json", "--metric", "nope"]);
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(v.as_array().unwrap().len(), 0);
+    // Multiple runs are summarized together, each row tagged with its run.
+    let run2 = t.path().join("run2");
+    simple_run(&run2);
+    let o = cli(&["stat", p, run2.to_str().unwrap(), "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let rows = v.as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|r| r.get("run").is_some()));
+    assert_eq!(rows[0]["run"], p);
+    assert_eq!(rows[1]["run"], run2.to_str().unwrap());
 }
 #[test]
 fn check_filter_narrows_cases() {
