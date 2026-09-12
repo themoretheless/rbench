@@ -165,11 +165,14 @@ fn csv_cell(s: &str) -> String {
 }
 pub fn export(run: &Run, format: &str) -> Result<String> {
     run.validate()?;
+    if format == "json" {
+        return Ok(serde_json::to_string_pretty(run)?);
+    }
     let mut out = String::new();
     if format == "csv" {
         out.push_str("case,metric,variant,process,pair,sequence,value,operations,unit,scope,phase,statistic,availability\n");
     } else if format != "jsonl" {
-        return Err(error("format must be csv or jsonl"));
+        return Err(error("format must be csv, jsonl or json"));
     }
     for o in &run.observations {
         let m = run
@@ -392,17 +395,8 @@ pub fn trend_points(store: &Path, case: &str, metric: &str) -> Result<Vec<TrendP
             .iter()
             .filter(|o| o.case == case && o.metric == metric && o.variant == "candidate")
         {
-            match o.number()? {
-                Some(v) => {
-                    processes
-                        .entry(o.process)
-                        .or_default()
-                        .push(if m.statistic == "batch_total" {
-                            v / o.operations as f64
-                        } else {
-                            v
-                        })
-                }
+            match m.reduce(o)? {
+                Some(v) => processes.entry(o.process).or_default().push(v),
                 None => unavailable = true,
             }
         }

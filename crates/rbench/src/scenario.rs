@@ -107,6 +107,22 @@ impl Recorder {
         *sequence += 1;
         Ok(())
     }
+    /// Declare positive work units for a case so reports can derive throughput,
+    /// mirroring `Suite::work_units` for application-owned scenarios.
+    pub fn work_units(&mut self, case: &str, unit: &str, count: u64) -> Result<()> {
+        if unit.is_empty() || count == 0 {
+            return Err(error("work units require a nonempty unit and positive count"));
+        }
+        let c = self
+            .run
+            .cases
+            .iter_mut()
+            .find(|c| c.id == case)
+            .ok_or_else(|| error("unknown case"))?;
+        c.contract.insert("work.unit".into(), unit.into());
+        c.contract.insert("work.count".into(), count.to_string());
+        Ok(())
+    }
     pub fn note(&mut self, note: impl Into<String>) {
         self.run.notes.push(note.into());
     }
