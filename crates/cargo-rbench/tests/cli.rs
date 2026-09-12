@@ -12,6 +12,22 @@ fn help_and_cargo_invocation() {
     assert!(cli(&["rbench", "doctor"]).status.success());
 }
 #[test]
+fn doctor_text_and_json_report_capabilities() {
+    let o = cli(&["doctor"]);
+    assert!(o.status.success());
+    let text = String::from_utf8(o.stdout).unwrap();
+    assert!(text.contains("rbench "));
+    assert!(text.contains("Statistics: independent process units required"));
+    let o = cli(&["doctor", "--json"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["rbench"], env!("CARGO_PKG_VERSION"));
+    assert!(v["os"].is_string() && v["arch"].is_string());
+    assert_eq!(v["statistics"], "independent process units required");
+    #[cfg(unix)]
+    assert_eq!(v["process_tree_cleanup"], "Unix process groups");
+}
+#[test]
 fn check_enforces_min_and_max_bounds() {
     let t = tempfile::tempdir().unwrap();
     let run = t.path().join("run");

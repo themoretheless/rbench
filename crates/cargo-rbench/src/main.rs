@@ -366,7 +366,11 @@ enum Action {
         offline: bool,
     },
     /// Print available host capabilities; does not change system settings.
-    Doctor,
+    Doctor {
+        /// Emit capabilities as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Print a shell completion script to stdout; does not modify the shell configuration.
     Completions {
         #[arg(value_enum)]
@@ -837,8 +841,30 @@ fn execute() -> Result<i32> {
                 return Ok(1);
             }
         }
-        Action::Doctor => {
-            println!("rbench {}\nOS: {}\nArch: {}\nClock: std::time::Instant\nProcess tree cleanup: {}\nGPU: supplied by scenario (not probed)\nWindow: supplied by scenario (not probed)\nIsolation: local runner lease only\nStatistics: independent process units required",env!("CARGO_PKG_VERSION"),std::env::consts::OS,std::env::consts::ARCH,if cfg!(unix){"Unix process groups"}else{"direct child only; descendants unsupported"});
+        Action::Doctor { json } => {
+            let process_tree_cleanup = if cfg!(unix) {
+                "Unix process groups"
+            } else {
+                "direct child only; descendants unsupported"
+            };
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "rbench": env!("CARGO_PKG_VERSION"),
+                        "os": std::env::consts::OS,
+                        "arch": std::env::consts::ARCH,
+                        "clock": "std::time::Instant",
+                        "process_tree_cleanup": process_tree_cleanup,
+                        "gpu": "supplied by scenario (not probed)",
+                        "window": "supplied by scenario (not probed)",
+                        "isolation": "local runner lease only",
+                        "statistics": "independent process units required",
+                    }))?
+                );
+            } else {
+                println!("rbench {}\nOS: {}\nArch: {}\nClock: std::time::Instant\nProcess tree cleanup: {}\nGPU: supplied by scenario (not probed)\nWindow: supplied by scenario (not probed)\nIsolation: local runner lease only\nStatistics: independent process units required",env!("CARGO_PKG_VERSION"),std::env::consts::OS,std::env::consts::ARCH,process_tree_cleanup);
+            }
         }
         Action::Completions { shell } => {
             // The installed cargo subcommand binary is `cargo-rbench`; complete against that name.
