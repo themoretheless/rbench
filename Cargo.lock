@@ -99,7 +99,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-rbench"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "clap_complete",
@@ -364,7 +364,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rbench"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "backtrace",
  "rbench-macros",
@@ -376,7 +376,7 @@ dependencies = [
 
 [[package]]
 name = "rbench-macros"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "quote",
  "syn",
