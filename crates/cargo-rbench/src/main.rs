@@ -910,12 +910,8 @@ fn execute() -> Result<i32> {
                         let entry = groups.entry(&o.variant).or_default();
                         entry.1.insert(o.process);
                         entry.2 += 1;
-                        if let Some(v) = o.number()? {
-                            entry.0.push(if m.statistic == "batch_total" {
-                                v / o.operations as f64
-                            } else {
-                                v
-                            });
+                        if let Some(v) = m.reduce(o)? {
+                            entry.0.push(v);
                         }
                     }
                     for (variant, (values, processes, samples)) in groups {
