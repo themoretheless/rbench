@@ -12,6 +12,34 @@ fn help_and_cargo_invocation() {
     assert!(cli(&["rbench", "doctor"]).status.success());
 }
 #[test]
+fn history_filters_by_status_and_limit() {
+    let t = tempfile::tempdir().unwrap();
+    let store = t.path();
+    let base = simple_run(&store.join("a"));
+    simple_run(&store.join("b"));
+    let mut failed = base.clone();
+    failed.status = rbench::Status::Failed;
+    failed.save_new(store.join("c")).unwrap();
+    let s = store.to_str().unwrap();
+    let count = |args: &[&str]| -> usize {
+        let mut all = vec!["--store", s, "history", "--json"];
+        all.extend_from_slice(args);
+        let o = cli(&all);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        serde_json::from_slice::<serde_json::Value>(&o.stdout)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    assert_eq!(count(&[]), 3);
+    assert_eq!(count(&["--status", "complete"]), 2);
+    assert_eq!(count(&["--status", "FAILED"]), 1); // case-insensitive
+    assert_eq!(count(&["--status", "cancelled"]), 0);
+    assert_eq!(count(&["--limit", "2"]), 2);
+    assert_eq!(count(&["--limit", "0"]), 0);
+}
+#[test]
 fn throughput_derives_and_gates_work_units() {
     let t = tempfile::tempdir().unwrap();
     let run = t.path().join("run");

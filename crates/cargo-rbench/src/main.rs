@@ -139,6 +139,12 @@ enum Action {
     History {
         #[arg(long)]
         json: bool,
+        /// Keep only runs with this status (case-insensitive): complete, failed, cancelled, incomplete, invalid.
+        #[arg(long)]
+        status: Option<String>,
+        /// Keep only the most recent N runs.
+        #[arg(long)]
+        limit: Option<usize>,
     },
     /// Show exact environment, provenance and workload-contract differences.
     Context {
@@ -442,7 +448,12 @@ fn execute() -> Result<i32> {
         },
 
         Action::Profiles => println!("quick: 8 samples × 1 ms + 10 ms warmup/case; smoke only\nnormal: 30 × 5 ms + 50 ms warmup/case\nthorough: 100 × 10 ms + 200 ms warmup/case\nUse worker --profile NAME after --. CLI --repetitions controls independent processes separately. Profiles do not guarantee confidence/precision."),
-        Action::History {json} => {let rows=artifacts::history(&cli.store)?;if json{println!("{}",serde_json::to_string_pretty(&rows)?);}else{for r in rows{println!("{} {} {} {}",r.id,r.status,r.path.display(),r.error.unwrap_or_default());}}},
+        Action::History {json,status,limit} => {
+            let mut rows=artifacts::history(&cli.store)?;
+            if let Some(status)=&status{rows.retain(|r|r.status.eq_ignore_ascii_case(status));}
+            if let Some(limit)=limit{if rows.len()>limit{rows.drain(0..rows.len()-limit);}}
+            if json{println!("{}",serde_json::to_string_pretty(&rows)?);}else{for r in rows{println!("{} {} {} {}",r.id,r.status,r.path.display(),r.error.unwrap_or_default());}}
+        },
         Action::Context {baseline,candidate} => println!("{}",artifacts::context(&load(baseline)?,&load(candidate)?)),
         Action::Trend {case,metric,output:path} => {
             let text=artifacts::trend(&cli.store,&case,&metric)?;
